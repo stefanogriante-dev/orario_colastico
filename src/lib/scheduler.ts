@@ -77,32 +77,6 @@ function mescola<T>(arr: readonly T[]): T[] {
 export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
   const { timeSlots, assegnazioni, entrateManuali, preferenze, scadenza } = input;
 
-  // Le ore gia' inserite a mano per una assegnazione non vanno rigenerate:
-  // contiamole per sottrarle dalle ore da piazzare automaticamente.
-  const oreManualiPerAssegnazione = new Map<string, number>();
-  for (const e of entrateManuali) {
-    const chiave = `${e.teacher_id}-${e.class_id}-${e.subject_id}`;
-    oreManualiPerAssegnazione.set(chiave, (oreManualiPerAssegnazione.get(chiave) ?? 0) + 1);
-  }
-
-  const unitaBase: Unita[] = [];
-  let contatore = 0;
-  for (const a of assegnazioni) {
-    const chiave = `${a.teacher_id}-${a.class_id}-${a.subject_id}`;
-    const oreGiaManuali = oreManualiPerAssegnazione.get(chiave) ?? 0;
-    const oreDaGenerare = Math.max(0, a.ore_settimanali - oreGiaManuali);
-    for (let i = 0; i < oreDaGenerare; i++) {
-      unitaBase.push({
-        unitaId: contatore++,
-        assegnazioneId: a.id,
-        teacherId: a.teacher_id,
-        classId: a.class_id,
-        subjectId: a.subject_id,
-        modalita: a.modalita,
-      });
-    }
-  }
-
   const slotById = new Map(timeSlots.map((s) => [s.id, s]));
   const slotsByDay = new Map<number, TimeSlot[]>();
   for (const s of timeSlots) {
@@ -117,95 +91,180 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     prefsByTeacher.get(p.teacher_id)!.push(p);
   }
 
+  // Le ore manuali sono fisse: contribuiscono all'occupazione del docente,
+  // all'occupazione della classe in cui si trovano, e vanno sottratte dalle
+  // ore da generare per la loro stessa assegnazione.
   const teacherBusyFisso = new Set<string>();
-  const classBusyFisso = new Set<string>();
+  const classBusyFissoPerClasse = new Map<number, Set<number>>();
+  const oreManualiPerAssegnazione = new Map<string, number>();
   for (const e of entrateManuali) {
     teacherBusyFisso.add(`${e.teacher_id}-${e.time_slot_id}`);
-    classBusyFisso.add(`${e.class_id}-${e.time_slot_id}`);
+    if (!classBusyFissoPerClasse.has(e.class_id)) classBusyFissoPerClasse.set(e.class_id, new Set());
+    classBusyFissoPerClasse.get(e.class_id)!.add(e.time_slot_id);
+    const chiaveAss = `${e.teacher_id}-${e.class_id}-${e.subject_id}`;
+    oreManualiPerAssegnazione.set(chiaveAss, (oreManualiPerAssegnazione.get(chiaveAss) ?? 0) + 1);
   }
 
-  let migliore: { piano: Map<number, number>; violazioni: number } | null = null;
-  let tentativi = 0;
+  // Le unita' da piazzare, raggruppate per classe: la generazione procede
+  // una classe alla volta, "bloccando" (fissando) le ore di una classe
+  // completata prima di passare alla successiva.
+  const classIds = Array.from(new Set(assegnazioni.map((a) => a.class_id)));
+  const unitaPerClasse = new Map<number, Unita[]>();
+  let contatoreGlobale = 0;
+  for (const classId of classIds) {
+    const unita: Unita[] = [];
+    for (const a of assegnazioni.filter((x) => x.class_id === classId)) {
+      const chiaveAss = `${a.teacher_id}-${a.class_id}-${a.subject_id}`;
+      const oreGiaManuali = oreManualiPerAssegnazione.get(chiaveAss) ?? 0;
+      const oreDaGenerare = Math.max(0, a.ore_settimanali - oreGiaManuali);
+      for (let i = 0; i < oreDaGenerare; i++) {
+        unita.push({
+          unitaId: contatoreGlobale++,
+          assegnazioneId: a.id,
+          teacherId: a.teacher_id,
+          classId: a.class_id,
+          subjectId: a.subject_id,
+          modalita: a.modalita,
+        });
+      }
+    }
+    unitaPerClasse.set(classId, unita);
+  }
 
-  // Se non ci sono unità da piazzare (nessuna assegnazione), consideriamo riuscito con 0 ore
-  if (unitaBase.length === 0) {
+  if (classIds.length === 0) {
     return { riuscito: true, entries: [], preferenzeViolate: 0, preferenzeValutabili: 0, tentativi: 0 };
   }
 
+  let tentativi = 0;
+  // Quanti riordini diversi provare per UNA classe (a parita' di classi gia'
+  // bloccate) prima di arrendersi e ripartire da capo con una combinazione
+  // completamente nuova (incluso un nuovo ordine delle classi).
+  const MAX_TENTATIVI_PER_CLASSE = 300;
+
   while (Date.now() < scadenza) {
     tentativi++;
-    const ordine = mescola(unitaBase);
-    const teacherBusy = new Set(teacherBusyFisso);
-    const classBusy = new Set(classBusyFisso);
-    const piano = new Map<number, number>();
-    const orePerTeacherGiorno = new Map<string, number[]>();
-    const orePerAssegnazioneGiorno = new Map<string, number[]>();
+    const ordineClassi = mescola(classIds);
 
-    let completato = true;
+    // Stato "confermato" del tentativo esterno corrente: si aggiorna solo
+    // quando una classe viene completata con successo e quindi bloccata.
+    let teacherBusy = new Set(teacherBusyFisso);
+    let pianoGlobale = new Map<number, number>();
+    let orePerTeacherGiorno = new Map<string, number[]>();
+    let orePerAssegnazioneGiorno = new Map<string, number[]>();
 
-    for (const u of ordine) {
-      let miglioreSlot: TimeSlot | null = null;
-      let migliorePenalita = Infinity;
+    let tuttoCompletato = true;
 
-      for (const slot of timeSlots) {
-        const keyT = `${u.teacherId}-${slot.id}`;
-        const keyC = `${u.classId}-${slot.id}`;
-        if (teacherBusy.has(keyT) || classBusy.has(keyC)) continue;
+    for (const classId of ordineClassi) {
+      const unitaClasseBase = unitaPerClasse.get(classId) ?? [];
+      const classBusyFissa = classBusyFissoPerClasse.get(classId) ?? new Set<number>();
 
-        const penalita = calcolaPenalita(u, slot, prefsByTeacher.get(u.teacherId) ?? [], orePerTeacherGiorno, orePerAssegnazioneGiorno, slotsByDay);
-        // piccola componente casuale per non scegliere sempre lo stesso slot a parità di punteggio
-        const penalitaConRumore = penalita + Math.random() * 0.1;
-        if (penalitaConRumore < migliorePenalita) {
-          migliorePenalita = penalitaConRumore;
-          miglioreSlot = slot;
+      let classeCompletata = false;
+
+      for (
+        let tentativoClasse = 0;
+        tentativoClasse < MAX_TENTATIVI_PER_CLASSE && Date.now() < scadenza;
+        tentativoClasse++
+      ) {
+        tentativi++;
+        const provaTeacherBusy = new Set(teacherBusy);
+        const provaClassBusy = new Set(classBusyFissa);
+        const provaPiano = new Map<number, number>();
+        const provaOrePerTeacherGiorno = clonaMappaOre(orePerTeacherGiorno);
+        const provaOrePerAssegnazioneGiorno = clonaMappaOre(orePerAssegnazioneGiorno);
+
+        const unitaShuffle = mescola(unitaClasseBase);
+        let classeOk = true;
+
+        for (const u of unitaShuffle) {
+          let miglioreSlot: TimeSlot | null = null;
+          let migliorePenalita = Infinity;
+
+          for (const slot of timeSlots) {
+            const keyT = `${u.teacherId}-${slot.id}`;
+            if (provaTeacherBusy.has(keyT) || provaClassBusy.has(slot.id)) continue;
+
+            const penalita = calcolaPenalita(
+              u,
+              slot,
+              prefsByTeacher.get(u.teacherId) ?? [],
+              provaOrePerTeacherGiorno,
+              provaOrePerAssegnazioneGiorno,
+              slotsByDay
+            );
+            const penalitaConRumore = penalita + Math.random() * 0.1;
+            if (penalitaConRumore < migliorePenalita) {
+              migliorePenalita = penalitaConRumore;
+              miglioreSlot = slot;
+            }
+          }
+
+          if (!miglioreSlot) {
+            classeOk = false;
+            break;
+          }
+
+          provaTeacherBusy.add(`${u.teacherId}-${miglioreSlot.id}`);
+          provaClassBusy.add(miglioreSlot.id);
+          provaPiano.set(u.unitaId, miglioreSlot.id);
+
+          const chiaveGiorno = `${u.teacherId}-${miglioreSlot.giorno}`;
+          if (!provaOrePerTeacherGiorno.has(chiaveGiorno)) provaOrePerTeacherGiorno.set(chiaveGiorno, []);
+          provaOrePerTeacherGiorno.get(chiaveGiorno)!.push(miglioreSlot.ora);
+
+          const chiaveAssegnazioneGiorno = `${u.assegnazioneId}-${miglioreSlot.giorno}`;
+          if (!provaOrePerAssegnazioneGiorno.has(chiaveAssegnazioneGiorno))
+            provaOrePerAssegnazioneGiorno.set(chiaveAssegnazioneGiorno, []);
+          provaOrePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno)!.push(miglioreSlot.ora);
+        }
+
+        if (classeOk) {
+          // Questa combinazione completa la classe: la blocchiamo, cioe'
+          // confermiamo lo stato provvisorio come nuovo stato "ufficiale"
+          // del tentativo esterno, senza toccare le classi gia' bloccate.
+          teacherBusy = provaTeacherBusy;
+          for (const [unitaId, slotId] of provaPiano) pianoGlobale.set(unitaId, slotId);
+          orePerTeacherGiorno = provaOrePerTeacherGiorno;
+          orePerAssegnazioneGiorno = provaOrePerAssegnazioneGiorno;
+          classeCompletata = true;
+          break;
         }
       }
 
-      if (!miglioreSlot) {
-        completato = false;
+      if (!classeCompletata) {
+        // Questa classe non si e' completata nonostante piu' combinazioni:
+        // abbandoniamo l'intero tentativo e ripartiamo da capo (nuovo
+        // ordine delle classi, nuove combinazioni per tutte).
+        tuttoCompletato = false;
         break;
       }
-
-      teacherBusy.add(`${u.teacherId}-${miglioreSlot.id}`);
-      classBusy.add(`${u.classId}-${miglioreSlot.id}`);
-      piano.set(u.unitaId, miglioreSlot.id);
-
-      const chiaveGiorno = `${u.teacherId}-${miglioreSlot.giorno}`;
-      if (!orePerTeacherGiorno.has(chiaveGiorno)) orePerTeacherGiorno.set(chiaveGiorno, []);
-      orePerTeacherGiorno.get(chiaveGiorno)!.push(miglioreSlot.ora);
-
-      const chiaveAssegnazioneGiorno = `${u.assegnazioneId}-${miglioreSlot.giorno}`;
-      if (!orePerAssegnazioneGiorno.has(chiaveAssegnazioneGiorno)) orePerAssegnazioneGiorno.set(chiaveAssegnazioneGiorno, []);
-      orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno)!.push(miglioreSlot.ora);
     }
 
-    if (completato) {
-      // ci fermiamo alla prima combinazione che riempie tutte le celle,
-      // senza continuare a cercare una soluzione con meno violazioni
-      const violazioni = contaViolazioni(unitaBase, piano, slotById, prefsByTeacher, slotsByDay);
-      migliore = { piano, violazioni };
-      break;
+    if (tuttoCompletato) {
+      const tutteLeUnita = Array.from(unitaPerClasse.values()).flat();
+      const violazioni = contaViolazioni(tutteLeUnita, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
+      const entries: EntrataGenerata[] = tutteLeUnita.map((u) => ({
+        teacher_id: u.teacherId,
+        class_id: u.classId,
+        subject_id: u.subjectId,
+        time_slot_id: pianoGlobale.get(u.unitaId)!,
+      }));
+      return {
+        riuscito: true,
+        entries,
+        preferenzeViolate: violazioni,
+        preferenzeValutabili: preferenze.length,
+        tentativi,
+      };
     }
   }
 
-  if (!migliore) {
-    return { riuscito: false, entries: [], preferenzeViolate: 0, preferenzeValutabili: preferenze.length, tentativi };
-  }
+  return { riuscito: false, entries: [], preferenzeViolate: 0, preferenzeValutabili: preferenze.length, tentativi };
+}
 
-  const entries: EntrataGenerata[] = unitaBase.map((u) => ({
-    teacher_id: u.teacherId,
-    class_id: u.classId,
-    subject_id: u.subjectId,
-    time_slot_id: migliore!.piano.get(u.unitaId)!,
-  }));
-
-  return {
-    riuscito: true,
-    entries,
-    preferenzeViolate: migliore.violazioni,
-    preferenzeValutabili: preferenze.length,
-    tentativi,
-  };
+function clonaMappaOre(mappa: Map<string, number[]>): Map<string, number[]> {
+  const clone = new Map<string, number[]>();
+  for (const [chiave, valori] of mappa) clone.set(chiave, [...valori]);
+  return clone;
 }
 
 function calcolaPenalita(
