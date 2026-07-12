@@ -26,6 +26,11 @@ interface EntrataOrario {
   manual: boolean;
 }
 
+interface CellaAperta {
+  classId: number;
+  slotId: number;
+}
+
 function traduciErroreConflitto(msg: string): string {
   if (msg.includes("teacher_id_time_slot_id")) {
     return "Questo docente è già impegnato in un'altra classe in questo stesso orario.";
@@ -48,11 +53,11 @@ export default function OrarioPage() {
   const [loading, setLoading] = useState(true);
   const [errore, setErrore] = useState<string | null>(null);
 
-  const [classeSelezionata, setClasseSelezionata] = useState<number | null>(null);
-  const [cellaAperta, setCellaAperta] = useState<number | null>(null);
+  const [cellaAperta, setCellaAperta] = useState<CellaAperta | null>(null);
   const [oreAlGiorno, setOreAlGiorno] = useState(5);
 
   const [generazioneInCorso, setGenerazioneInCorso] = useState(false);
+  const [operazioneInCorso, setOperazioneInCorso] = useState(false);
   const [progresso, setProgresso] = useState<{ tentativi: number; secondi: number } | null>(null);
   const [esitoGenerazione, setEsitoGenerazione] = useState<
     { tipo: "successo" | "fallimento"; messaggio: string } | null
@@ -78,8 +83,7 @@ export default function OrarioPage() {
     if (errori.length > 0) {
       setErrore(errori.map((e) => e!.message).join(" / "));
     } else {
-      const classiCaricate = (c.data as Classe[]) ?? [];
-      setClassi(classiCaricate);
+      setClassi((c.data as Classe[]) ?? []);
       setDocenti((d.data as Docente[]) ?? []);
       setMaterie((m.data as Materia[]) ?? []);
       setAssegnazioni((a.data as AssegnazioneInput[]) ?? []);
@@ -90,7 +94,6 @@ export default function OrarioPage() {
       setTimeSlots((ts.data as TimeSlot[]) ?? []);
       setEntrate((en.data as EntrataOrario[]) ?? []);
       setErrore(null);
-      setClasseSelezionata((corrente) => corrente ?? classiCaricate[0]?.id ?? null);
     }
     setLoading(false);
   }
@@ -109,26 +112,6 @@ export default function OrarioPage() {
     return ore.length > 0 ? Math.max(...ore) : 0;
   }, [timeSlots]);
 
-  const entrateClasseSelezionata = useMemo(
-    () => entrate.filter((e) => e.class_id === classeSelezionata),
-    [entrate, classeSelezionata]
-  );
-
-  const assegnazioniClasse = useMemo(
-    () => assegnazioni.filter((a) => a.class_id === classeSelezionata),
-    [assegnazioni, classeSelezionata]
-  );
-
-  const docentiDisponibiliClasse = useMemo(() => {
-    const ids = new Set(assegnazioniClasse.map((a) => a.teacher_id));
-    return docenti.filter((d) => ids.has(d.id));
-  }, [assegnazioniClasse, docenti]);
-
-  const oreRichiesteClasse = useMemo(
-    () => assegnazioniClasse.reduce((tot, a) => tot + a.ore_settimanali, 0),
-    [assegnazioniClasse]
-  );
-
   async function generaGrigliaOraria() {
     if (oreAlGiorno < 1) return;
     const righe: { giorno: number; ora: number }[] = [];
@@ -144,17 +127,12 @@ export default function OrarioPage() {
     caricaTutto();
   }
 
-  function apriCella(slotId: number) {
-    setCellaAperta(slotId);
-  }
-
-  async function confermaAssegnazione(teacherId: number, subjectId: number) {
-    if (!cellaAperta || !classeSelezionata) return;
+  async function confermaAssegnazione(classId: number, slotId: number, teacherId: number, subjectId: number) {
     const { error } = await supabase.from("schedule_entries").insert({
-      class_id: classeSelezionata,
+      class_id: classId,
       teacher_id: teacherId,
       subject_id: subjectId,
-      time_slot_id: cellaAperta,
+      time_slot_id: slotId,
       manual: true,
     });
     if (error) {
@@ -173,6 +151,36 @@ export default function OrarioPage() {
     caricaTutto();
   }
 
+  async function svuotaAutomatiche() {
+    if (
+      !confirm(
+        "Rimuovere tutte le ore generate automaticamente da tutte le classi? Le ore inserite a mano non verranno toccate."
+      )
+    )
+      return;
+    setOperazioneInCorso(true);
+    const { error } = await supabase.from("schedule_entries").delete().eq("manual", false);
+    setErrore(error ? error.message : null);
+    setEsitoGenerazione(null);
+    await caricaTutto();
+    setOperazioneInCorso(false);
+  }
+
+  async function svuotaTutto() {
+    if (
+      !confirm(
+        "Svuotare COMPLETAMENTE l'orario di tutte le classi, comprese le ore inserite a mano? L'operazione non si può annullare."
+      )
+    )
+      return;
+    setOperazioneInCorso(true);
+    const { error } = await supabase.from("schedule_entries").delete().gt("id", 0);
+    setErrore(error ? error.message : null);
+    setEsitoGenerazione(null);
+    await caricaTutto();
+    setOperazioneInCorso(false);
+  }
+
   async function generaAutomaticamente() {
     setGenerazioneInCorso(true);
     setEsitoGenerazione(null);
@@ -188,6 +196,7 @@ export default function OrarioPage() {
         entrateManuali: entrateManualiComplete.map((e) => ({
           teacher_id: e.teacher_id,
           class_id: e.class_id,
+          subject_id: e.subject_id,
           time_slot_id: e.time_slot_id,
         })),
         preferenze,
@@ -286,36 +295,29 @@ export default function OrarioPage() {
         <>
           <div className="rounded-lg border border-gray-200 bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <label className="text-sm text-gray-600">Classe</label>
-                <select
-                  className="rounded border border-gray-300 px-2 py-1 text-sm"
-                  value={classeSelezionata ?? 0}
-                  onChange={(e) => {
-                    setClasseSelezionata(Number(e.target.value));
-                    setCellaAperta(null);
-                  }}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={generaAutomaticamente}
+                  disabled={generazioneInCorso || operazioneInCorso}
+                  className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white disabled:opacity-50"
                 >
-                  {classi.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.nome}
-                    </option>
-                  ))}
-                </select>
-                {classeSelezionata && (
-                  <span className="text-xs text-gray-400">
-                    {entrateClasseSelezionata.length} / {oreRichiesteClasse} ore assegnate
-                  </span>
-                )}
+                  {generazioneInCorso ? "Generazione in corso..." : "Genera automaticamente"}
+                </button>
+                <button
+                  onClick={svuotaAutomatiche}
+                  disabled={generazioneInCorso || operazioneInCorso}
+                  className="rounded border border-gray-300 px-3 py-1.5 text-sm text-gray-700 disabled:opacity-50"
+                >
+                  Svuota ore automatiche
+                </button>
+                <button
+                  onClick={svuotaTutto}
+                  disabled={generazioneInCorso || operazioneInCorso}
+                  className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
+                >
+                  Svuota tutto l'orario
+                </button>
               </div>
-
-              <button
-                onClick={generaAutomaticamente}
-                disabled={generazioneInCorso}
-                className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-              >
-                {generazioneInCorso ? "Generazione in corso..." : "Genera automaticamente"}
-              </button>
             </div>
 
             {generazioneInCorso && progresso && (
@@ -343,62 +345,140 @@ export default function OrarioPage() {
             </p>
           </div>
 
-          {classeSelezionata && (
-            <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white p-4">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr>
-                    <th className="w-10 border-b border-gray-200 pb-2 text-left text-xs text-gray-400">
-                      Ora
-                    </th>
-                    {giorni.map((g) => (
-                      <th
-                        key={g.valore}
-                        className="border-b border-gray-200 pb-2 text-left text-xs text-gray-500"
-                      >
-                        {g.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {Array.from({ length: oreMax }, (_, i) => i + 1).map((ora) => (
-                    <tr key={ora}>
-                      <td className="py-1 pr-2 align-top text-xs text-gray-400">{ora}</td>
-                      {giorni.map((g) => {
-                        const slot = timeSlots.find((s) => s.giorno === g.valore && s.ora === ora);
-                        if (!slot) return <td key={g.valore} className="p-1" />;
-                        const entrata = entrateClasseSelezionata.find(
-                          (e) => e.time_slot_id === slot.id
-                        );
-                        return (
-                          <td key={g.valore} className="p-1 align-top">
-                            <CellaOrario
-                              entrata={entrata}
-                              docente={entrata ? docenteById.get(entrata.teacher_id) : undefined}
-                              materia={entrata ? materiaById.get(entrata.subject_id) : undefined}
-                              aperta={cellaAperta === slot.id}
-                              docentiDisponibili={docentiDisponibiliClasse}
-                              materie={materie}
-                              assegnazioniClasse={assegnazioniClasse}
-                              onApri={() => apriCella(slot.id)}
-                              onChiudi={() => setCellaAperta(null)}
-                              onElimina={entrata ? () => eliminaEntrata(entrata.id) : undefined}
-                              onConferma={confermaAssegnazione}
-                            />
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <div className="space-y-10">
+            {classi.map((classe) => (
+              <GrigliaClasse
+                key={classe.id}
+                classe={classe}
+                giorni={giorni}
+                oreMax={oreMax}
+                timeSlots={timeSlots}
+                entrateClasse={entrate.filter((e) => e.class_id === classe.id)}
+                assegnazioniClasse={assegnazioni.filter((a) => a.class_id === classe.id)}
+                docenti={docenti}
+                materie={materie}
+                docenteById={docenteById}
+                materiaById={materiaById}
+                cellaAperta={cellaAperta}
+                onApriCella={(slotId) => setCellaAperta({ classId: classe.id, slotId })}
+                onChiudiCella={() => setCellaAperta(null)}
+                onConferma={(slotId, teacherId, subjectId) =>
+                  confermaAssegnazione(classe.id, slotId, teacherId, subjectId)
+                }
+                onElimina={eliminaEntrata}
+              />
+            ))}
+            {classi.length === 0 && !loading && (
+              <p className="text-sm text-gray-400">
+                Nessuna classe inserita. Aggiungile prima dalla pagina Classi.
+              </p>
+            )}
+          </div>
         </>
       )}
 
       {loading && <p className="text-sm text-gray-400">Caricamento...</p>}
+    </div>
+  );
+}
+
+function GrigliaClasse({
+  classe,
+  giorni,
+  oreMax,
+  timeSlots,
+  entrateClasse,
+  assegnazioniClasse,
+  docenti,
+  materie,
+  docenteById,
+  materiaById,
+  cellaAperta,
+  onApriCella,
+  onChiudiCella,
+  onConferma,
+  onElimina,
+}: {
+  classe: Classe;
+  giorni: { valore: number; label: string }[];
+  oreMax: number;
+  timeSlots: TimeSlot[];
+  entrateClasse: EntrataOrario[];
+  assegnazioniClasse: AssegnazioneInput[];
+  docenti: Docente[];
+  materie: Materia[];
+  docenteById: Map<number, Docente>;
+  materiaById: Map<number, Materia>;
+  cellaAperta: CellaAperta | null;
+  onApriCella: (slotId: number) => void;
+  onChiudiCella: () => void;
+  onConferma: (slotId: number, teacherId: number, subjectId: number) => void;
+  onElimina: (id: number) => void;
+}) {
+  const docentiDisponibili = useMemo(() => {
+    const ids = new Set(assegnazioniClasse.map((a) => a.teacher_id));
+    return docenti.filter((d) => ids.has(d.id));
+  }, [assegnazioniClasse, docenti]);
+
+  const oreRichieste = useMemo(
+    () => assegnazioniClasse.reduce((tot, a) => tot + a.ore_settimanali, 0),
+    [assegnazioniClasse]
+  );
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="font-medium text-gray-900">{classe.nome}</h2>
+        <span className="text-xs text-gray-400">
+          {entrateClasse.length} / {oreRichieste} ore assegnate
+        </span>
+      </div>
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr>
+            <th className="w-10 border-b border-gray-200 pb-2 text-left text-xs text-gray-400">
+              Ora
+            </th>
+            {giorni.map((g) => (
+              <th
+                key={g.valore}
+                className="border-b border-gray-200 pb-2 text-left text-xs text-gray-500"
+              >
+                {g.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: oreMax }, (_, i) => i + 1).map((ora) => (
+            <tr key={ora}>
+              <td className="py-1 pr-2 align-top text-xs text-gray-400">{ora}</td>
+              {giorni.map((g) => {
+                const slot = timeSlots.find((s) => s.giorno === g.valore && s.ora === ora);
+                if (!slot) return <td key={g.valore} className="p-1" />;
+                const entrata = entrateClasse.find((e) => e.time_slot_id === slot.id);
+                return (
+                  <td key={g.valore} className="p-1 align-top">
+                    <CellaOrario
+                      entrata={entrata}
+                      docente={entrata ? docenteById.get(entrata.teacher_id) : undefined}
+                      materia={entrata ? materiaById.get(entrata.subject_id) : undefined}
+                      aperta={cellaAperta?.classId === classe.id && cellaAperta?.slotId === slot.id}
+                      docentiDisponibili={docentiDisponibili}
+                      materie={materie}
+                      assegnazioniClasse={assegnazioniClasse}
+                      onApri={() => onApriCella(slot.id)}
+                      onChiudi={onChiudiCella}
+                      onElimina={entrata ? () => onElimina(entrata.id) : undefined}
+                      onConferma={(teacherId, subjectId) => onConferma(slot.id, teacherId, subjectId)}
+                    />
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

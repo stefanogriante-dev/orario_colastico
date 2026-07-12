@@ -29,6 +29,7 @@ export interface AssegnazioneInput {
 export interface EntrataFissa {
   teacher_id: number;
   class_id: number;
+  subject_id: number;
   time_slot_id: number;
 }
 
@@ -76,10 +77,21 @@ function mescola<T>(arr: readonly T[]): T[] {
 export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
   const { timeSlots, assegnazioni, entrateManuali, preferenze, scadenza } = input;
 
+  // Le ore gia' inserite a mano per una assegnazione non vanno rigenerate:
+  // contiamole per sottrarle dalle ore da piazzare automaticamente.
+  const oreManualiPerAssegnazione = new Map<string, number>();
+  for (const e of entrateManuali) {
+    const chiave = `${e.teacher_id}-${e.class_id}-${e.subject_id}`;
+    oreManualiPerAssegnazione.set(chiave, (oreManualiPerAssegnazione.get(chiave) ?? 0) + 1);
+  }
+
   const unitaBase: Unita[] = [];
   let contatore = 0;
   for (const a of assegnazioni) {
-    for (let i = 0; i < a.ore_settimanali; i++) {
+    const chiave = `${a.teacher_id}-${a.class_id}-${a.subject_id}`;
+    const oreGiaManuali = oreManualiPerAssegnazione.get(chiave) ?? 0;
+    const oreDaGenerare = Math.max(0, a.ore_settimanali - oreGiaManuali);
+    for (let i = 0; i < oreDaGenerare; i++) {
       unitaBase.push({
         unitaId: contatore++,
         assegnazioneId: a.id,
