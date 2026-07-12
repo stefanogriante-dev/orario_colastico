@@ -87,6 +87,10 @@ export default function PreferenzePage() {
   ) {
     let dettaglio: Record<string, unknown> | null = null;
     if (form.tipo === "giorno_libero") dettaglio = { giorno: form.giorno };
+    if (form.tipo === "no_prima_ora" || form.tipo === "no_ultima_ora") {
+      // giorno 0 = "Sempre": nessun dettaglio, si applica tutti i giorni
+      dettaglio = form.giorno === 0 ? null : { giorno: form.giorno };
+    }
     if (form.tipo === "continuita_classe") dettaglio = { class_id: form.classId };
 
     const { error } = await supabase.from("preferences").insert({
@@ -198,6 +202,13 @@ function DocentePreferenze({
       const g = giorni.find((x) => x.valore === (p.dettaglio as { giorno: number }).giorno);
       return `${TIPO_LABEL[p.tipo]}: ${g?.label ?? "?"}`;
     }
+    if (p.tipo === "no_prima_ora" || p.tipo === "no_ultima_ora") {
+      if (p.dettaglio) {
+        const g = giorni.find((x) => x.valore === (p.dettaglio as { giorno: number }).giorno);
+        return `${TIPO_LABEL[p.tipo]}: ${g?.label ?? "?"}`;
+      }
+      return `${TIPO_LABEL[p.tipo]}: sempre`;
+    }
     if (p.tipo === "continuita_classe" && p.dettaglio) {
       const classId = (p.dettaglio as { class_id: number }).class_id;
       const c = classi.find((x) => x.id === classId);
@@ -268,9 +279,17 @@ function DocentePreferenze({
               <select
                 className="rounded border border-gray-300 px-2 py-1 text-sm"
                 value={form.tipo}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, tipo: e.target.value as TipoPreferenza }))
-                }
+                onChange={(e) => {
+                  const nuovoTipo = e.target.value as TipoPreferenza;
+                  setForm((p) => ({
+                    ...p,
+                    tipo: nuovoTipo,
+                    giorno:
+                      nuovoTipo === "no_prima_ora" || nuovoTipo === "no_ultima_ora"
+                        ? 0
+                        : p.giorno,
+                  }));
+                }}
               >
                 {(Object.keys(TIPO_LABEL) as TipoPreferenza[]).map((t) => (
                   <option key={t} value={t}>
@@ -290,6 +309,26 @@ function DocentePreferenze({
                     setForm((p) => ({ ...p, giorno: Number(e.target.value) }))
                   }
                 >
+                  {giorni.map((g) => (
+                    <option key={g.valore} value={g.valore}>
+                      {g.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {(form.tipo === "no_prima_ora" || form.tipo === "no_ultima_ora") && (
+              <div>
+                <label className="block text-xs text-gray-500">Giorno</label>
+                <select
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                  value={form.giorno}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, giorno: Number(e.target.value) }))
+                  }
+                >
+                  <option value={0}>Sempre</option>
                   {giorni.map((g) => (
                     <option key={g.valore} value={g.valore}>
                       {g.label}

@@ -411,6 +411,16 @@ function passaVincoliGenerici(
   return true;
 }
 
+// Le preferenze "no_prima_ora" e "no_ultima_ora" possono valere per un
+// giorno specifico (dettaglio.giorno) o per tutti i giorni ("Sempre",
+// rappresentato da dettaglio assente/null).
+function giornoCompatibile(p: Preferenza, giorno: number): boolean {
+  if (!p.dettaglio) return true;
+  const giornoRichiesto = (p.dettaglio as { giorno?: number }).giorno;
+  if (giornoRichiesto === undefined || giornoRichiesto === null) return true;
+  return giornoRichiesto === giorno;
+}
+
 // Penalita' di uno slot basata solo sulle preferenze del docente (giorno
 // libero, no prima/ultima ora, evita buchi). Usata sia per le ore singole
 // sia per ciascuna meta' di una coppia.
@@ -431,8 +441,12 @@ function penalitaPreferenzeSlot(
       const giorno = (p.dettaglio as { giorno?: number }).giorno;
       if (giorno === slot.giorno) penalita += 50;
     }
-    if (p.tipo === "no_prima_ora" && slot.ora === primaOra) penalita += 20;
-    if (p.tipo === "no_ultima_ora" && slot.ora === ultimaOra) penalita += 20;
+    if (p.tipo === "no_prima_ora" && slot.ora === primaOra && giornoCompatibile(p, slot.giorno)) {
+      penalita += 20;
+    }
+    if (p.tipo === "no_ultima_ora" && slot.ora === ultimaOra && giornoCompatibile(p, slot.giorno)) {
+      penalita += 20;
+    }
   }
 
   const chiaveGiorno = `${teacherId}-${slot.giorno}`;
@@ -576,6 +590,7 @@ function contaViolazioni(
 
       if (p.tipo === "no_prima_ora") {
         for (const s of oreDocente) {
+          if (!giornoCompatibile(p, s.giorno)) continue;
           const oreGiornoGriglia = slotsByDay.get(s.giorno) ?? [];
           const primaOra = oreGiornoGriglia[0]?.ora;
           if (s.ora === primaOra) violazioni++;
@@ -584,6 +599,7 @@ function contaViolazioni(
 
       if (p.tipo === "no_ultima_ora") {
         for (const s of oreDocente) {
+          if (!giornoCompatibile(p, s.giorno)) continue;
           const oreGiornoGriglia = slotsByDay.get(s.giorno) ?? [];
           const ultimaOra = oreGiornoGriglia[oreGiornoGriglia.length - 1]?.ora;
           if (s.ora === ultimaOra) violazioni++;
