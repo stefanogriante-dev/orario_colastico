@@ -133,15 +133,37 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
   // Le ore manuali sono fisse: contribuiscono all'occupazione del docente,
   // all'occupazione della classe in cui si trovano, e vanno sottratte dalle
   // ore da generare per la loro stessa assegnazione.
+  const assegnazioneIndex = new Map<string, number>();
+  for (const a of assegnazioni) {
+    assegnazioneIndex.set(`${a.teacher_id}-${a.class_id}-${a.subject_id}`, a.id);
+  }
+
   const teacherBusyFisso = new Set<string>();
   const classBusyFissoPerClasse = new Map<number, Set<number>>();
   const oreManualiPerAssegnazione = new Map<string, number>();
+  // Ore già occupate dal docente nella stessa classe, per giorno (vincolo: max 2 ore/giorno)
+  const teacherClasseGiornoManuale = new Map<string, number>();
+  // Ore già occupate dalla stessa materia/classe/docente, per giorno (vincolo: se ripetuta, adiacente)
+  const assegnazioneGiornoManuale = new Map<string, number[]>();
   for (const e of entrateManuali) {
     teacherBusyFisso.add(`${e.teacher_id}-${e.time_slot_id}`);
     if (!classBusyFissoPerClasse.has(e.class_id)) classBusyFissoPerClasse.set(e.class_id, new Set());
     classBusyFissoPerClasse.get(e.class_id)!.add(e.time_slot_id);
     const chiaveAss = `${e.teacher_id}-${e.class_id}-${e.subject_id}`;
     oreManualiPerAssegnazione.set(chiaveAss, (oreManualiPerAssegnazione.get(chiaveAss) ?? 0) + 1);
+
+    const slotManuale = slotById.get(e.time_slot_id);
+    if (slotManuale) {
+      const chiaveTCG = `${e.teacher_id}-${e.class_id}-${slotManuale.giorno}`;
+      teacherClasseGiornoManuale.set(chiaveTCG, (teacherClasseGiornoManuale.get(chiaveTCG) ?? 0) + 1);
+
+      const assegnazioneId = assegnazioneIndex.get(chiaveAss);
+      if (assegnazioneId !== undefined) {
+        const chiaveAG = `${assegnazioneId}-${slotManuale.giorno}`;
+        if (!assegnazioneGiornoManuale.has(chiaveAG)) assegnazioneGiornoManuale.set(chiaveAG, []);
+        assegnazioneGiornoManuale.get(chiaveAG)!.push(slotManuale.ora);
+      }
+    }
   }
 
   // Le unita' da piazzare, raggruppate per classe e poi in "compiti"
@@ -190,7 +212,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     let teacherBusy = new Set(teacherBusyFisso);
     let pianoGlobale = new Map<number, number>();
     let orePerTeacherGiorno = new Map<string, number[]>();
-    let orePerAssegnazioneGiorno = new Map<string, number[]>();
+    let orePerAssegnazioneGiorno = clonaMappaOre(assegnazioneGiornoManuale);
+    let orePerTeacherClasseGiorno = new Map<string, number>(teacherClasseGiornoManuale);
 
     let tuttoCompletato = true;
 
@@ -211,6 +234,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         const provaPiano = new Map<number, number>();
         const provaOrePerTeacherGiorno = clonaMappaOre(orePerTeacherGiorno);
         const provaOrePerAssegnazioneGiorno = clonaMappaOre(orePerAssegnazioneGiorno);
+        const provaOrePerTeacherClasseGiorno = new Map<string, number>(orePerTeacherClasseGiorno);
 
         const compitiShuffle = mescola(compitiClasse);
         let classeOk = true;
@@ -225,7 +249,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               provaClassBusy,
               prefsByTeacher.get(compito.unita.teacherId) ?? [],
               provaOrePerTeacherGiorno,
-              provaOrePerAssegnazioneGiorno
+              provaOrePerAssegnazioneGiorno,
+              provaOrePerTeacherClasseGiorno
             );
             if (!esito) {
               classeOk = false;
@@ -238,7 +263,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               provaClassBusy,
               provaPiano,
               provaOrePerTeacherGiorno,
-              provaOrePerAssegnazioneGiorno
+              provaOrePerAssegnazioneGiorno,
+              provaOrePerTeacherClasseGiorno
             );
           } else {
             const esito = piazzaCoppia(
@@ -247,7 +273,9 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               provaTeacherBusy,
               provaClassBusy,
               prefsByTeacher.get(compito.unitaA.teacherId) ?? [],
-              provaOrePerTeacherGiorno
+              provaOrePerTeacherGiorno,
+              provaOrePerTeacherClasseGiorno,
+              provaOrePerAssegnazioneGiorno
             );
             if (!esito) {
               classeOk = false;
@@ -260,7 +288,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               provaClassBusy,
               provaPiano,
               provaOrePerTeacherGiorno,
-              provaOrePerAssegnazioneGiorno
+              provaOrePerAssegnazioneGiorno,
+              provaOrePerTeacherClasseGiorno
             );
             registraPiazzamento(
               compito.unitaB,
@@ -269,7 +298,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               provaClassBusy,
               provaPiano,
               provaOrePerTeacherGiorno,
-              provaOrePerAssegnazioneGiorno
+              provaOrePerAssegnazioneGiorno,
+              provaOrePerTeacherClasseGiorno
             );
           }
         }
@@ -282,6 +312,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
           for (const [unitaId, slotId] of provaPiano) pianoGlobale.set(unitaId, slotId);
           orePerTeacherGiorno = provaOrePerTeacherGiorno;
           orePerAssegnazioneGiorno = provaOrePerAssegnazioneGiorno;
+          orePerTeacherClasseGiorno = provaOrePerTeacherClasseGiorno;
           classeCompletata = true;
           break;
         }
@@ -337,7 +368,8 @@ function registraPiazzamento(
   classBusy: Set<number>,
   piano: Map<number, number>,
   orePerTeacherGiorno: Map<string, number[]>,
-  orePerAssegnazioneGiorno: Map<string, number[]>
+  orePerAssegnazioneGiorno: Map<string, number[]>,
+  orePerTeacherClasseGiorno: Map<string, number>
 ) {
   teacherBusy.add(`${u.teacherId}-${slot.id}`);
   classBusy.add(slot.id);
@@ -350,6 +382,33 @@ function registraPiazzamento(
   const chiaveAssegnazioneGiorno = `${u.assegnazioneId}-${slot.giorno}`;
   if (!orePerAssegnazioneGiorno.has(chiaveAssegnazioneGiorno)) orePerAssegnazioneGiorno.set(chiaveAssegnazioneGiorno, []);
   orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno)!.push(slot.ora);
+
+  const chiaveTCG = `${u.teacherId}-${u.classId}-${slot.giorno}`;
+  orePerTeacherClasseGiorno.set(chiaveTCG, (orePerTeacherClasseGiorno.get(chiaveTCG) ?? 0) + 1);
+}
+
+// Vincoli generici rigidi, sempre validi indipendentemente dalla modalita':
+// (1) un docente non può avere più di 2 ore al giorno nella stessa classe;
+// (2) se la stessa materia (stesso docente/classe) compare più volte nello
+//     stesso giorno, le ore devono essere consecutive (mai "sparse").
+function passaVincoliGenerici(
+  u: Unita,
+  slot: TimeSlot,
+  orePerTeacherClasseGiorno: Map<string, number>,
+  orePerAssegnazioneGiorno: Map<string, number[]>
+): boolean {
+  const chiaveTCG = `${u.teacherId}-${u.classId}-${slot.giorno}`;
+  const oreEsistentiTCG = orePerTeacherClasseGiorno.get(chiaveTCG) ?? 0;
+  if (oreEsistentiTCG >= 2) return false;
+
+  const chiaveAG = `${u.assegnazioneId}-${slot.giorno}`;
+  const oreEsistentiAG = orePerAssegnazioneGiorno.get(chiaveAG) ?? [];
+  if (oreEsistentiAG.length > 0) {
+    const adiacente = oreEsistentiAG.some((o) => Math.abs(o - slot.ora) === 1);
+    if (!adiacente) return false;
+  }
+
+  return true;
 }
 
 // Penalita' di uno slot basata solo sulle preferenze del docente (giorno
@@ -399,10 +458,14 @@ function piazzaSingola(
   classBusy: Set<number>,
   prefs: Preferenza[],
   orePerTeacherGiorno: Map<string, number[]>,
-  orePerAssegnazioneGiorno: Map<string, number[]>
+  orePerAssegnazioneGiorno: Map<string, number[]>,
+  orePerTeacherClasseGiorno: Map<string, number>
 ): TimeSlot | null {
   const liberi = timeSlots.filter(
-    (slot) => !teacherBusy.has(`${u.teacherId}-${slot.id}`) && !classBusy.has(slot.id)
+    (slot) =>
+      !teacherBusy.has(`${u.teacherId}-${slot.id}`) &&
+      !classBusy.has(slot.id) &&
+      passaVincoliGenerici(u, slot, orePerTeacherClasseGiorno, orePerAssegnazioneGiorno)
   );
   if (liberi.length === 0) return null;
 
@@ -422,13 +485,18 @@ function piazzaSingola(
   }
 
   if (u.modalita === "separate") {
+    // preferisci un giorno in cui questa materia non ha ancora ore: se per
+    // forza di cose deve finire nello stesso giorno di un'altra ora della
+    // stessa materia, il filtro sui vincoli generici garantisce già che sia
+    // adiacente (mai "sparsa" nello stesso giorno).
     const chiaveAssegnazioneGiorno = (giorno: number) => `${u.assegnazioneId}-${giorno}`;
-    const nonAdiacenti = liberi.filter((slot) => {
+    const giorniLiberi = liberi.filter((slot) => {
       const oreEsistenti = orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno(slot.giorno)) ?? [];
-      return !oreEsistenti.some((o) => Math.abs(o - slot.ora) === 1);
+      return oreEsistenti.length === 0;
     });
-    if (nonAdiacenti.length > 0) return migliorFra(nonAdiacenti);
-    // nessuna alternativa non adiacente: meglio piazzarla comunque
+    if (giorniLiberi.length > 0) return migliorFra(giorniLiberi);
+    // nessun giorno libero per questa materia: ripiega sugli slot validi
+    // rimasti (già garantiti adiacenti se nello stesso giorno)
   }
 
   return migliorFra(liberi);
@@ -442,7 +510,9 @@ function piazzaCoppia(
   teacherBusy: Set<string>,
   classBusy: Set<number>,
   prefs: Preferenza[],
-  orePerTeacherGiorno: Map<string, number[]>
+  orePerTeacherGiorno: Map<string, number[]>,
+  orePerTeacherClasseGiorno: Map<string, number>,
+  orePerAssegnazioneGiorno: Map<string, number[]>
 ): [TimeSlot, TimeSlot] | null {
   let migliorCoppia: [TimeSlot, TimeSlot] | null = null;
   let migliorePenalita = Infinity;
@@ -456,6 +526,18 @@ function piazzaCoppia(
       const libero1 = !teacherBusy.has(`${u.teacherId}-${slot1.id}`) && !classBusy.has(slot1.id);
       const libero2 = !teacherBusy.has(`${u.teacherId}-${slot2.id}`) && !classBusy.has(slot2.id);
       if (!libero1 || !libero2) continue;
+
+      // la coppia aggiunge 2 ore: il docente deve partire da 0 ore quel
+      // giorno in questa classe (mai più di 2 ore/giorno in totale)
+      const chiaveTCG = `${u.teacherId}-${u.classId}-${slot1.giorno}`;
+      const oreEsistentiTCG = orePerTeacherClasseGiorno.get(chiaveTCG) ?? 0;
+      if (oreEsistentiTCG > 0) continue;
+
+      // se questa materia ha già un'ora quel giorno non c'è più spazio per
+      // una coppia intera (supererebbe le 2 ore/giorno consentite)
+      const chiaveAG = `${u.assegnazioneId}-${slot1.giorno}`;
+      const oreEsistentiAG = orePerAssegnazioneGiorno.get(chiaveAG) ?? [];
+      if (oreEsistentiAG.length > 0) continue;
 
       const penalita =
         penalitaPreferenzeSlot(u.teacherId, slot1, prefs, orePerTeacherGiorno, slotsByDay) +
