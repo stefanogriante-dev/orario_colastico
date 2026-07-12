@@ -88,11 +88,26 @@ export default function OrarioPage() {
       setMaterie((m.data as Materia[]) ?? []);
       setAssegnazioni((a.data as AssegnazioneInput[]) ?? []);
       setPreferenze((p.data as Preferenza[]) ?? []);
+      const giorniConfigurati = sc.data
+        ? (sc.data as { giorni_settimana: number }).giorni_settimana
+        : giorniSettimana;
       if (sc.data) {
-        setGiorniSettimana((sc.data as { giorni_settimana: number }).giorni_settimana);
+        setGiorniSettimana(giorniConfigurati);
       }
-      setTimeSlots((ts.data as TimeSlot[]) ?? []);
-      setEntrate((en.data as EntrataOrario[]) ?? []);
+      // Alcuni slot potrebbero essere duplicati (stesso giorno/ora) o oltre i
+      // giorni configurati: teniamo solo uno slot "canonico" per ogni
+      // giorno/ora, cosi' la griglia mostrata e il motore di generazione
+      // usano sempre esattamente le stesse celle.
+      const slotCanonici = new Map<string, TimeSlot>();
+      for (const s of (ts.data as TimeSlot[]) ?? []) {
+        if (s.giorno > giorniConfigurati) continue;
+        const chiave = `${s.giorno}-${s.ora}`;
+        if (!slotCanonici.has(chiave)) slotCanonici.set(chiave, s);
+      }
+      const timeSlotsNormalizzati = Array.from(slotCanonici.values());
+      const idSlotValidi = new Set(timeSlotsNormalizzati.map((s) => s.id));
+      setTimeSlots(timeSlotsNormalizzati);
+      setEntrate(((en.data as EntrataOrario[]) ?? []).filter((e) => idSlotValidi.has(e.time_slot_id)));
       setErrore(null);
     }
     setLoading(false);
