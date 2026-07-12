@@ -4,17 +4,24 @@ import type { Modalita, Preferenza, TimeSlot } from "./types";
 // Motore di generazione automatica dell'orario.
 //
 // Euristica: tentativi ripetuti (random-restart) con piazzamento
-// goloso (greedy) delle ore da assegnare, ordinate casualmente ad
-// ogni tentativo, scegliendo per ciascuna il time slot libero con
-// la penalità più bassa rispetto alle preferenze dei docenti.
-// Non è un solver ottimo garantito, ma per un problema di questa
-// scala (poche classi, poche decine di slot) converge rapidamente
-// a soluzioni complete e ragionevoli entro il tempo limite.
+// goloso (greedy) delle ore da assegnare. La generazione procede
+// una classe alla volta: quando una classe viene completata, le
+// sue ore restano "bloccate" e si passa alla successiva provando
+// piu' combinazioni; se una classe non si completa nonostante piu'
+// tentativi, si riparte da capo con un nuovo ordine delle classi.
 //
 // Vincoli rigidi (mai violati): un docente non può avere due ore
 // nello stesso slot in classi diverse; una classe non può avere
 // due lezioni nello stesso slot; le ore manuali sono fisse e non
 // vengono mai spostate o sovrascritte.
+//
+// La modalita' "a coppie" e' un vincolo strutturale: le ore di una
+// assegnazione vengono raggruppate in blocchi da 2 ore adiacenti e
+// piazzate atomicamente insieme (stesso giorno, ore consecutive
+// libere sia per il docente che per la classe), non un semplice
+// bonus di punteggio. La modalita' "separate" evita l'adiacenza
+// quando possibile, con un secondo tentativo permissivo se non ci
+// sono alternative.
 // ============================================================
 
 export interface AssegnazioneInput {
@@ -65,6 +72,10 @@ interface Unita {
   modalita: Modalita;
 }
 
+type Compito =
+  | { tipo: "singola"; unita: Unita }
+  | { tipo: "coppia"; unitaA: Unita; unitaB: Unita };
+
 function mescola<T>(arr: readonly T[]): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -72,6 +83,34 @@ function mescola<T>(arr: readonly T[]): T[] {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// Raggruppa le ore di ciascuna assegnazione: per modalita' "coppie" le
+// accoppia in blocchi da 2 ore da piazzare atomicamente adiacenti, con
+// un'eventuale ora singola avanzata se il totale e' dispari. Le altre
+// modalita' restano ore singole indipendenti.
+function costruisciCompiti(unitaClasse: Unita[]): Compito[] {
+  const perAssegnazione = new Map<number, Unita[]>();
+  for (const u of unitaClasse) {
+    if (!perAssegnazione.has(u.assegnazioneId)) perAssegnazione.set(u.assegnazioneId, []);
+    perAssegnazione.get(u.assegnazioneId)!.push(u);
+  }
+
+  const compiti: Compito[] = [];
+  for (const unita of perAssegnazione.values()) {
+    if (unita.length > 0 && unita[0].modalita === "coppie") {
+      let i = 0;
+      for (; i + 1 < unita.length; i += 2) {
+        compiti.push({ tipo: "coppia", unitaA: unita[i], unitaB: unita[i + 1] });
+      }
+      if (i < unita.length) {
+        compiti.push({ tipo: "singola", unita: unita[i] });
+      }
+    } else {
+      for (const u of unita) compiti.push({ tipo: "singola", unita: u });
+    }
+  }
+  return compiti;
 }
 
 export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
@@ -105,11 +144,12 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     oreManualiPerAssegnazione.set(chiaveAss, (oreManualiPerAssegnazione.get(chiaveAss) ?? 0) + 1);
   }
 
-  // Le unita' da piazzare, raggruppate per classe: la generazione procede
-  // una classe alla volta, "bloccando" (fissando) le ore di una classe
-  // completata prima di passare alla successiva.
+  // Le unita' da piazzare, raggruppate per classe e poi in "compiti"
+  // (singole ore o coppie atomiche). La generazione procede una classe
+  // alla volta, bloccando le ore di una classe completata prima di
+  // passare alla successiva.
   const classIds = Array.from(new Set(assegnazioni.map((a) => a.class_id)));
-  const unitaPerClasse = new Map<number, Unita[]>();
+  const compitiPerClasse = new Map<number, Compito[]>();
   let contatoreGlobale = 0;
   for (const classId of classIds) {
     const unita: Unita[] = [];
@@ -128,7 +168,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         });
       }
     }
-    unitaPerClasse.set(classId, unita);
+    compitiPerClasse.set(classId, costruisciCompiti(unita));
   }
 
   if (classIds.length === 0) {
@@ -155,7 +195,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     let tuttoCompletato = true;
 
     for (const classId of ordineClassi) {
-      const unitaClasseBase = unitaPerClasse.get(classId) ?? [];
+      const compitiClasse = compitiPerClasse.get(classId) ?? [];
       const classBusyFissa = classBusyFissoPerClasse.get(classId) ?? new Set<number>();
 
       let classeCompletata = false;
@@ -172,49 +212,66 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         const provaOrePerTeacherGiorno = clonaMappaOre(orePerTeacherGiorno);
         const provaOrePerAssegnazioneGiorno = clonaMappaOre(orePerAssegnazioneGiorno);
 
-        const unitaShuffle = mescola(unitaClasseBase);
+        const compitiShuffle = mescola(compitiClasse);
         let classeOk = true;
 
-        for (const u of unitaShuffle) {
-          let miglioreSlot: TimeSlot | null = null;
-          let migliorePenalita = Infinity;
-
-          for (const slot of timeSlots) {
-            const keyT = `${u.teacherId}-${slot.id}`;
-            if (provaTeacherBusy.has(keyT) || provaClassBusy.has(slot.id)) continue;
-
-            const penalita = calcolaPenalita(
-              u,
-              slot,
-              prefsByTeacher.get(u.teacherId) ?? [],
+        for (const compito of compitiShuffle) {
+          if (compito.tipo === "singola") {
+            const esito = piazzaSingola(
+              compito.unita,
+              timeSlots,
+              slotsByDay,
+              provaTeacherBusy,
+              provaClassBusy,
+              prefsByTeacher.get(compito.unita.teacherId) ?? [],
               provaOrePerTeacherGiorno,
-              provaOrePerAssegnazioneGiorno,
-              slotsByDay
+              provaOrePerAssegnazioneGiorno
             );
-            const penalitaConRumore = penalita + Math.random() * 0.1;
-            if (penalitaConRumore < migliorePenalita) {
-              migliorePenalita = penalitaConRumore;
-              miglioreSlot = slot;
+            if (!esito) {
+              classeOk = false;
+              break;
             }
+            registraPiazzamento(
+              compito.unita,
+              esito,
+              provaTeacherBusy,
+              provaClassBusy,
+              provaPiano,
+              provaOrePerTeacherGiorno,
+              provaOrePerAssegnazioneGiorno
+            );
+          } else {
+            const esito = piazzaCoppia(
+              compito.unitaA,
+              slotsByDay,
+              provaTeacherBusy,
+              provaClassBusy,
+              prefsByTeacher.get(compito.unitaA.teacherId) ?? [],
+              provaOrePerTeacherGiorno
+            );
+            if (!esito) {
+              classeOk = false;
+              break;
+            }
+            registraPiazzamento(
+              compito.unitaA,
+              esito[0],
+              provaTeacherBusy,
+              provaClassBusy,
+              provaPiano,
+              provaOrePerTeacherGiorno,
+              provaOrePerAssegnazioneGiorno
+            );
+            registraPiazzamento(
+              compito.unitaB,
+              esito[1],
+              provaTeacherBusy,
+              provaClassBusy,
+              provaPiano,
+              provaOrePerTeacherGiorno,
+              provaOrePerAssegnazioneGiorno
+            );
           }
-
-          if (!miglioreSlot) {
-            classeOk = false;
-            break;
-          }
-
-          provaTeacherBusy.add(`${u.teacherId}-${miglioreSlot.id}`);
-          provaClassBusy.add(miglioreSlot.id);
-          provaPiano.set(u.unitaId, miglioreSlot.id);
-
-          const chiaveGiorno = `${u.teacherId}-${miglioreSlot.giorno}`;
-          if (!provaOrePerTeacherGiorno.has(chiaveGiorno)) provaOrePerTeacherGiorno.set(chiaveGiorno, []);
-          provaOrePerTeacherGiorno.get(chiaveGiorno)!.push(miglioreSlot.ora);
-
-          const chiaveAssegnazioneGiorno = `${u.assegnazioneId}-${miglioreSlot.giorno}`;
-          if (!provaOrePerAssegnazioneGiorno.has(chiaveAssegnazioneGiorno))
-            provaOrePerAssegnazioneGiorno.set(chiaveAssegnazioneGiorno, []);
-          provaOrePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno)!.push(miglioreSlot.ora);
         }
 
         if (classeOk) {
@@ -240,7 +297,13 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
 
     if (tuttoCompletato) {
-      const tutteLeUnita = Array.from(unitaPerClasse.values()).flat();
+      const tutteLeUnita: Unita[] = [];
+      for (const compiti of compitiPerClasse.values()) {
+        for (const c of compiti) {
+          if (c.tipo === "singola") tutteLeUnita.push(c.unita);
+          else tutteLeUnita.push(c.unitaA, c.unitaB);
+        }
+      }
       const violazioni = contaViolazioni(tutteLeUnita, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
       const entries: EntrataGenerata[] = tutteLeUnita.map((u) => ({
         teacher_id: u.teacherId,
@@ -267,12 +330,36 @@ function clonaMappaOre(mappa: Map<string, number[]>): Map<string, number[]> {
   return clone;
 }
 
-function calcolaPenalita(
+function registraPiazzamento(
   u: Unita,
+  slot: TimeSlot,
+  teacherBusy: Set<string>,
+  classBusy: Set<number>,
+  piano: Map<number, number>,
+  orePerTeacherGiorno: Map<string, number[]>,
+  orePerAssegnazioneGiorno: Map<string, number[]>
+) {
+  teacherBusy.add(`${u.teacherId}-${slot.id}`);
+  classBusy.add(slot.id);
+  piano.set(u.unitaId, slot.id);
+
+  const chiaveGiorno = `${u.teacherId}-${slot.giorno}`;
+  if (!orePerTeacherGiorno.has(chiaveGiorno)) orePerTeacherGiorno.set(chiaveGiorno, []);
+  orePerTeacherGiorno.get(chiaveGiorno)!.push(slot.ora);
+
+  const chiaveAssegnazioneGiorno = `${u.assegnazioneId}-${slot.giorno}`;
+  if (!orePerAssegnazioneGiorno.has(chiaveAssegnazioneGiorno)) orePerAssegnazioneGiorno.set(chiaveAssegnazioneGiorno, []);
+  orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno)!.push(slot.ora);
+}
+
+// Penalita' di uno slot basata solo sulle preferenze del docente (giorno
+// libero, no prima/ultima ora, evita buchi). Usata sia per le ore singole
+// sia per ciascuna meta' di una coppia.
+function penalitaPreferenzeSlot(
+  teacherId: number,
   slot: TimeSlot,
   prefs: Preferenza[],
   orePerTeacherGiorno: Map<string, number[]>,
-  orePerAssegnazioneGiorno: Map<string, number[]>,
   slotsByDay: Map<number, TimeSlot[]>
 ): number {
   let penalita = 0;
@@ -289,7 +376,7 @@ function calcolaPenalita(
     if (p.tipo === "no_ultima_ora" && slot.ora === ultimaOra) penalita += 20;
   }
 
-  const chiaveGiorno = `${u.teacherId}-${slot.giorno}`;
+  const chiaveGiorno = `${teacherId}-${slot.giorno}`;
   const oreEsistentiTeacher = orePerTeacherGiorno.get(chiaveGiorno) ?? [];
   const haPreferenzaBuchi = prefs.some((p) => p.tipo === "evita_buchi");
   if (haPreferenzaBuchi && oreEsistentiTeacher.length > 0) {
@@ -297,18 +384,92 @@ function calcolaPenalita(
     if (!adiacente) penalita += 15;
   }
 
-  const chiaveAssegnazioneGiorno = `${u.assegnazioneId}-${slot.giorno}`;
-  const oreEsistentiAssegnazione = orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno) ?? [];
-  if (u.modalita === "coppie" && oreEsistentiAssegnazione.length > 0) {
-    const adiacente = oreEsistentiAssegnazione.some((o) => Math.abs(o - slot.ora) === 1);
-    if (!adiacente) penalita += 10;
-  }
-  if (u.modalita === "separate" && oreEsistentiAssegnazione.length > 0) {
-    const adiacente = oreEsistentiAssegnazione.some((o) => Math.abs(o - slot.ora) === 1);
-    if (adiacente) penalita += 10;
+  return penalita;
+}
+
+// Piazza una singola ora. Per modalita' "separate" evita, quando possibile,
+// gli slot adiacenti a un'altra ora della stessa assegnazione nello stesso
+// giorno: prima prova solo slot non adiacenti, e se nessuno e' disponibile
+// ripiega su tutti gli slot liberi (meglio un'ora vicina che nessuna ora).
+function piazzaSingola(
+  u: Unita,
+  timeSlots: TimeSlot[],
+  slotsByDay: Map<number, TimeSlot[]>,
+  teacherBusy: Set<string>,
+  classBusy: Set<number>,
+  prefs: Preferenza[],
+  orePerTeacherGiorno: Map<string, number[]>,
+  orePerAssegnazioneGiorno: Map<string, number[]>
+): TimeSlot | null {
+  const liberi = timeSlots.filter(
+    (slot) => !teacherBusy.has(`${u.teacherId}-${slot.id}`) && !classBusy.has(slot.id)
+  );
+  if (liberi.length === 0) return null;
+
+  function migliorFra(candidati: TimeSlot[]): TimeSlot | null {
+    let migliore: TimeSlot | null = null;
+    let migliorePenalita = Infinity;
+    for (const slot of candidati) {
+      const penalita =
+        penalitaPreferenzeSlot(u.teacherId, slot, prefs, orePerTeacherGiorno, slotsByDay) +
+        Math.random() * 0.1;
+      if (penalita < migliorePenalita) {
+        migliorePenalita = penalita;
+        migliore = slot;
+      }
+    }
+    return migliore;
   }
 
-  return penalita;
+  if (u.modalita === "separate") {
+    const chiaveAssegnazioneGiorno = (giorno: number) => `${u.assegnazioneId}-${giorno}`;
+    const nonAdiacenti = liberi.filter((slot) => {
+      const oreEsistenti = orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno(slot.giorno)) ?? [];
+      return !oreEsistenti.some((o) => Math.abs(o - slot.ora) === 1);
+    });
+    if (nonAdiacenti.length > 0) return migliorFra(nonAdiacenti);
+    // nessuna alternativa non adiacente: meglio piazzarla comunque
+  }
+
+  return migliorFra(liberi);
+}
+
+// Piazza una coppia di ore adiacenti (stesso giorno, ore consecutive)
+// entrambe libere per il docente e per la classe.
+function piazzaCoppia(
+  u: Unita,
+  slotsByDay: Map<number, TimeSlot[]>,
+  teacherBusy: Set<string>,
+  classBusy: Set<number>,
+  prefs: Preferenza[],
+  orePerTeacherGiorno: Map<string, number[]>
+): [TimeSlot, TimeSlot] | null {
+  let migliorCoppia: [TimeSlot, TimeSlot] | null = null;
+  let migliorePenalita = Infinity;
+
+  for (const oreGiorno of slotsByDay.values()) {
+    for (let i = 0; i < oreGiorno.length - 1; i++) {
+      const slot1 = oreGiorno[i];
+      const slot2 = oreGiorno[i + 1];
+      if (slot2.ora - slot1.ora !== 1) continue; // devono essere consecutive
+
+      const libero1 = !teacherBusy.has(`${u.teacherId}-${slot1.id}`) && !classBusy.has(slot1.id);
+      const libero2 = !teacherBusy.has(`${u.teacherId}-${slot2.id}`) && !classBusy.has(slot2.id);
+      if (!libero1 || !libero2) continue;
+
+      const penalita =
+        penalitaPreferenzeSlot(u.teacherId, slot1, prefs, orePerTeacherGiorno, slotsByDay) +
+        penalitaPreferenzeSlot(u.teacherId, slot2, prefs, orePerTeacherGiorno, slotsByDay) +
+        Math.random() * 0.1;
+
+      if (penalita < migliorePenalita) {
+        migliorePenalita = penalita;
+        migliorCoppia = [slot1, slot2];
+      }
+    }
+  }
+
+  return migliorCoppia;
 }
 
 function contaViolazioni(
