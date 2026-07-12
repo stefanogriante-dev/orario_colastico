@@ -46,3 +46,18 @@ export interface Preferenza {
   nota: string | null;
   stato: StatoPreferenza;
 }
+
+export interface TimeSlot {
+  id: number;
+  giorno: number;
+  ora: number;
+}
+
+export interface ScheduleEntry {
+  id: number;
+  class_id: number;
+  teacher_id: number;
+  subject_id: number;
+  time_slot_id: number;
+  manual: boolean;
+}
