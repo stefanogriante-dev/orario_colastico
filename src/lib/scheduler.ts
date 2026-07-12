@@ -168,11 +168,11 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
 
     if (completato) {
+      // ci fermiamo alla prima combinazione che riempie tutte le celle,
+      // senza continuare a cercare una soluzione con meno violazioni
       const violazioni = contaViolazioni(unitaBase, piano, slotById, prefsByTeacher, slotsByDay);
-      if (!migliore || violazioni < migliore.violazioni) {
-        migliore = { piano, violazioni };
-      }
-      if (violazioni === 0) break;
+      migliore = { piano, violazioni };
+      break;
     }
   }
 
@@ -322,9 +322,9 @@ export async function generaOrarioProgressivo(
     tentativiTotali += risultato.tentativi;
 
     if (risultato.riuscito) {
-      if (!migliore || risultato.preferenzeViolate < migliore.preferenzeViolate) {
-        migliore = risultato;
-      }
+      // ci fermiamo alla prima combinazione completa trovata (anche a blocchi):
+      // non continuiamo a cercarne una con meno violazioni di preferenze
+      migliore = risultato;
     }
 
     onProgress?.({
@@ -333,7 +333,7 @@ export async function generaOrarioProgressivo(
       migliorViolazioni: migliore ? migliore.preferenzeViolate : null,
     });
 
-    if (migliore && migliore.preferenzeViolate === 0) break;
+    if (migliore) break;
 
     // lascia respirare l'interfaccia prima del prossimo blocco
     await new Promise((r) => setTimeout(r, 0));
