@@ -411,14 +411,17 @@ function passaVincoliGenerici(
   return true;
 }
 
-// Le preferenze "no_prima_ora" e "no_ultima_ora" possono valere per un
-// giorno specifico (dettaglio.giorno) o per tutti i giorni ("Sempre",
-// rappresentato da dettaglio assente/null).
+// Le preferenze "no_prima_ora" e "no_ultima_ora" possono valere per uno o
+// più giorni specifici (dettaglio.giorni: number[], selezionati con le
+// checkbox) o per tutti i giorni ("Sempre", rappresentato da dettaglio
+// assente/null). E' supportato anche il vecchio formato a giorno singolo
+// (dettaglio.giorno) per compatibilita' con le preferenze già salvate.
 function giornoCompatibile(p: Preferenza, giorno: number): boolean {
   if (!p.dettaglio) return true;
-  const giornoRichiesto = (p.dettaglio as { giorno?: number }).giorno;
-  if (giornoRichiesto === undefined || giornoRichiesto === null) return true;
-  return giornoRichiesto === giorno;
+  const dettaglio = p.dettaglio as { giorno?: number; giorni?: number[] };
+  if (Array.isArray(dettaglio.giorni)) return dettaglio.giorni.includes(giorno);
+  if (dettaglio.giorno === undefined || dettaglio.giorno === null) return true;
+  return dettaglio.giorno === giorno;
 }
 
 // Penalita' di uno slot basata solo sulle preferenze del docente (giorno

@@ -83,13 +83,20 @@ export default function PreferenzePage() {
 
   async function aggiungiPreferenza(
     teacherId: number,
-    form: { tipo: TipoPreferenza; giorno: number; classId: number; nota: string }
+    form: {
+      tipo: TipoPreferenza;
+      giorno: number;
+      giorniMultipli: number[];
+      classId: number;
+      nota: string;
+    }
   ) {
     let dettaglio: Record<string, unknown> | null = null;
     if (form.tipo === "giorno_libero") dettaglio = { giorno: form.giorno };
     if (form.tipo === "no_prima_ora" || form.tipo === "no_ultima_ora") {
-      // giorno 0 = "Sempre": nessun dettaglio, si applica tutti i giorni
-      dettaglio = form.giorno === 0 ? null : { giorno: form.giorno };
+      // tutti i giorni selezionati (checkbox) = "Sempre": nessun dettaglio
+      const tuttiSelezionati = giorni.every((g) => form.giorniMultipli.includes(g.valore));
+      dettaglio = tuttiSelezionati ? null : { giorni: [...form.giorniMultipli].sort((a, b) => a - b) };
     }
     if (form.tipo === "continuita_classe") dettaglio = { class_id: form.classId };
 
@@ -184,6 +191,7 @@ function DocentePreferenze({
   onAggiungi: (form: {
     tipo: TipoPreferenza;
     giorno: number;
+    giorniMultipli: number[];
     classId: number;
     nota: string;
   }) => void;
@@ -193,6 +201,7 @@ function DocentePreferenze({
   const [form, setForm] = useState({
     tipo: "giorno_libero" as TipoPreferenza,
     giorno: giorni[0]?.valore ?? 1,
+    giorniMultipli: giorni.map((g) => g.valore),
     classId: 0,
     nota: "",
   });
@@ -203,7 +212,14 @@ function DocentePreferenze({
       return `${TIPO_LABEL[p.tipo]}: ${g?.label ?? "?"}`;
     }
     if (p.tipo === "no_prima_ora" || p.tipo === "no_ultima_ora") {
-      if (p.dettaglio) {
+      if (p.dettaglio && Array.isArray((p.dettaglio as { giorni?: number[] }).giorni)) {
+        const elenco = (p.dettaglio as { giorni: number[] }).giorni
+          .map((v) => giorni.find((x) => x.valore === v)?.label ?? "?")
+          .join(", ");
+        return `${TIPO_LABEL[p.tipo]}: ${elenco}`;
+      }
+      if (p.dettaglio && (p.dettaglio as { giorno?: number }).giorno !== undefined) {
+        // formato legacy: un solo giorno
         const g = giorni.find((x) => x.valore === (p.dettaglio as { giorno: number }).giorno);
         return `${TIPO_LABEL[p.tipo]}: ${g?.label ?? "?"}`;
       }
@@ -284,10 +300,10 @@ function DocentePreferenze({
                   setForm((p) => ({
                     ...p,
                     tipo: nuovoTipo,
-                    giorno:
+                    giorniMultipli:
                       nuovoTipo === "no_prima_ora" || nuovoTipo === "no_ultima_ora"
-                        ? 0
-                        : p.giorno,
+                        ? giorni.map((g) => g.valore)
+                        : p.giorniMultipli,
                   }));
                 }}
               >
@@ -320,21 +336,29 @@ function DocentePreferenze({
 
             {(form.tipo === "no_prima_ora" || form.tipo === "no_ultima_ora") && (
               <div>
-                <label className="block text-xs text-gray-500">Giorno</label>
-                <select
-                  className="rounded border border-gray-300 px-2 py-1 text-sm"
-                  value={form.giorno}
-                  onChange={(e) =>
-                    setForm((p) => ({ ...p, giorno: Number(e.target.value) }))
-                  }
-                >
-                  <option value={0}>Sempre</option>
+                <label className="block text-xs text-gray-500">Giorni (tutti = sempre)</label>
+                <div className="flex flex-wrap gap-2 rounded border border-gray-300 px-2 py-1.5">
                   {giorni.map((g) => (
-                    <option key={g.valore} value={g.valore}>
+                    <label
+                      key={g.valore}
+                      className="flex items-center gap-1 text-sm text-gray-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={form.giorniMultipli.includes(g.valore)}
+                        onChange={(e) =>
+                          setForm((p) => ({
+                            ...p,
+                            giorniMultipli: e.target.checked
+                              ? [...p.giorniMultipli, g.valore]
+                              : p.giorniMultipli.filter((v) => v !== g.valore),
+                          }))
+                        }
+                      />
                       {g.label}
-                    </option>
+                    </label>
                   ))}
-                </select>
+                </div>
               </div>
             )}
 
@@ -373,7 +397,11 @@ function DocentePreferenze({
                 onAggiungi(form);
                 setForm((p) => ({ ...p, nota: "" }));
               }}
-              className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white"
+              disabled={
+                (form.tipo === "no_prima_ora" || form.tipo === "no_ultima_ora") &&
+                form.giorniMultipli.length === 0
+              }
+              className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               Aggiungi
             </button>
