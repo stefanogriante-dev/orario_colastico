@@ -33,7 +33,6 @@ export type TipoPreferenza =
   | "no_prima_ora"
   | "no_ultima_ora"
   | "evita_buchi"
-  | "continuita_classe"
   | "altro";
 
 export type StatoPreferenza = "non_valutata" | "soddisfatta" | "non_soddisfatta";

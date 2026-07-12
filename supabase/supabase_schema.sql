@@ -16,7 +16,6 @@ create type tipo_preferenza as enum (
   'no_prima_ora',
   'no_ultima_ora',
   'evita_buchi',
-  'continuita_classe',
   'altro'
 );
 
