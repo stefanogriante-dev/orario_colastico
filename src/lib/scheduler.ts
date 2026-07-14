@@ -56,6 +56,11 @@ export interface GeneraOrarioInput {
   // docente (somma su tutte le classi). Se un docente non compare nella
   // mappa si usa il limite di default (5).
   limiteOreGiornoPerTeacher?: Map<number, number>;
+  // Docenti a cui dare priorita' nell'ordine di processamento delle classi
+  // (tipicamente chi ha avuto preferenze violate nel tentativo precedente):
+  // uso interno di generaOrarioProgressivo per "guidare" i tentativi
+  // successivi verso le zone del problema, di norma non va passato a mano.
+  docentiPrioritari?: Set<number>;
   scadenza: number; // Date.now() + millisecondi disponibili
 }
 
@@ -71,6 +76,10 @@ export interface GeneraOrarioOutput {
   preferenzeViolate: number;
   preferenzeValutabili: number;
   tentativi: number;
+  // Docenti che hanno almeno una preferenza violata in questo risultato:
+  // usato da generaOrarioProgressivo per dare priorita' alle loro classi
+  // nel tentativo successivo.
+  docentiViolati: Set<number>;
 }
 
 interface Unita {
@@ -93,6 +102,54 @@ function mescola<T>(arr: readonly T[]): T[] {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// Ordina le classi per il prossimo tentativo: le classi che coinvolgono
+// uno dei "docenti prioritari" (chi ha avuto preferenze violate nel
+// tentativo precedente) vengono processate per prime, cosi' hanno la
+// prima scelta sugli slot migliori invece di rischiare che gli slot
+// buoni siano gia' stati presi da altre classi senza preferenze. Tra le
+// classi dello stesso gruppo l'ordine resta comunque casuale.
+function ordinaClassiConPriorita(
+  classIds: number[],
+  assegnazioni: AssegnazioneInput[],
+  docentiPrioritari: Set<number> | undefined
+): number[] {
+  if (!docentiPrioritari || docentiPrioritari.size === 0) return mescola(classIds);
+
+  const prioritarie: number[] = [];
+  const altre: number[] = [];
+  for (const classId of classIds) {
+    const coinvolgeDocentePrioritario = assegnazioni.some(
+      (a) => a.class_id === classId && docentiPrioritari.has(a.teacher_id)
+    );
+    (coinvolgeDocentePrioritario ? prioritarie : altre).push(classId);
+  }
+  return [...mescola(prioritarie), ...mescola(altre)];
+}
+
+function teacherIdDiCompito(c: Compito): number {
+  return c.tipo === "singola" ? c.unita.teacherId : c.unitaA.teacherId;
+}
+
+// Stessa logica di ordinaClassiConPriorita ma dentro una singola classe:
+// la maggior parte dei conflitti reali capita proprio qui, tra le materie
+// della stessa classe che si contendono le poche ore rimaste. Le "ore" dei
+// docenti prioritari vengono piazzate per prime, cosi' hanno la prima
+// scelta sugli slot buoni invece di ritrovarsi, per pura sfortuna
+// dell'ordine casuale, con in mano solo lo slot del loro giorno libero.
+function ordinaCompitiConPriorita(
+  compiti: Compito[],
+  docentiPrioritari: Set<number> | undefined
+): Compito[] {
+  if (!docentiPrioritari || docentiPrioritari.size === 0) return mescola(compiti);
+
+  const prioritari: Compito[] = [];
+  const altri: Compito[] = [];
+  for (const c of compiti) {
+    (docentiPrioritari.has(teacherIdDiCompito(c)) ? prioritari : altri).push(c);
+  }
+  return [...mescola(prioritari), ...mescola(altri)];
 }
 
 // Raggruppa le ore di ciascuna assegnazione: per modalita' "coppie" le
@@ -124,7 +181,8 @@ function costruisciCompiti(unitaClasse: Unita[]): Compito[] {
 }
 
 export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
-  const { timeSlots, assegnazioni, entrateManuali, preferenze, limiteOreGiornoPerTeacher, scadenza } = input;
+  const { timeSlots, assegnazioni, entrateManuali, preferenze, limiteOreGiornoPerTeacher, docentiPrioritari, scadenza } =
+    input;
 
   const slotById = new Map(timeSlots.map((s) => [s.id, s]));
   const slotsByDay = new Map<number, TimeSlot[]>();
@@ -211,7 +269,14 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
   }
 
   if (classIds.length === 0) {
-    return { riuscito: true, entries: [], preferenzeViolate: 0, preferenzeValutabili: 0, tentativi: 0 };
+    return {
+      riuscito: true,
+      entries: [],
+      preferenzeViolate: 0,
+      preferenzeValutabili: 0,
+      tentativi: 0,
+      docentiViolati: new Set(),
+    };
   }
 
   let tentativi = 0;
@@ -222,7 +287,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
 
   while (Date.now() < scadenza) {
     tentativi++;
-    const ordineClassi = mescola(classIds);
+    const ordineClassi = ordinaClassiConPriorita(classIds, assegnazioni, docentiPrioritari);
 
     // Stato "confermato" del tentativo esterno corrente: si aggiorna solo
     // quando una classe viene completata con successo e quindi bloccata.
@@ -253,7 +318,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         const provaOrePerAssegnazioneGiorno = clonaMappaOre(orePerAssegnazioneGiorno);
         const provaOrePerTeacherClasseGiorno = new Map<string, number>(orePerTeacherClasseGiorno);
 
-        const compitiShuffle = mescola(compitiClasse);
+        const compitiShuffle = ordinaCompitiConPriorita(compitiClasse, docentiPrioritari);
         let classeOk = true;
 
         for (const compito of compitiShuffle) {
@@ -354,7 +419,13 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
           else tutteLeUnita.push(c.unitaA, c.unitaB);
         }
       }
-      const violazioni = contaViolazioni(tutteLeUnita, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
+      const { totale: violazioni, docenti: docentiViolati } = contaViolazioni(
+        tutteLeUnita,
+        pianoGlobale,
+        slotById,
+        prefsByTeacher,
+        slotsByDay
+      );
       const entries: EntrataGenerata[] = tutteLeUnita.map((u) => ({
         teacher_id: u.teacherId,
         class_id: u.classId,
@@ -367,11 +438,19 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         preferenzeViolate: violazioni,
         preferenzeValutabili: preferenze.length,
         tentativi,
+        docentiViolati,
       };
     }
   }
 
-  return { riuscito: false, entries: [], preferenzeViolate: 0, preferenzeValutabili: preferenze.length, tentativi };
+  return {
+    riuscito: false,
+    entries: [],
+    preferenzeViolate: 0,
+    preferenzeValutabili: preferenze.length,
+    tentativi,
+    docentiViolati: new Set(),
+  };
 }
 
 function clonaMappaOre(mappa: Map<string, number[]>): Map<string, number[]> {
@@ -615,18 +694,21 @@ function contaViolazioni(
   slotById: Map<number, TimeSlot>,
   prefsByTeacher: Map<number, Preferenza[]>,
   slotsByDay: Map<number, TimeSlot[]>
-): number {
+): { totale: number; docenti: Set<number> } {
   let violazioni = 0;
+  const docentiViolati = new Set<number>();
   for (const [teacherId, prefs] of prefsByTeacher.entries()) {
     const oreDocente = unita
       .filter((u) => u.teacherId === teacherId)
       .map((u) => slotById.get(piano.get(u.unitaId)!))
       .filter((s): s is TimeSlot => Boolean(s));
 
+    let violazioniDocente = 0;
+
     for (const p of prefs) {
       if (p.tipo === "giorno_libero") {
         for (const giorno of giorniDaDettaglio(p.dettaglio)) {
-          if (oreDocente.some((s) => s.giorno === giorno)) violazioni++;
+          if (oreDocente.some((s) => s.giorno === giorno)) violazioniDocente++;
         }
       }
 
@@ -635,7 +717,7 @@ function contaViolazioni(
           if (!giornoCompatibile(p, s.giorno)) continue;
           const oreGiornoGriglia = slotsByDay.get(s.giorno) ?? [];
           const primaOra = oreGiornoGriglia[0]?.ora;
-          if (s.ora === primaOra) violazioni++;
+          if (s.ora === primaOra) violazioniDocente++;
         }
       }
 
@@ -644,7 +726,7 @@ function contaViolazioni(
           if (!giornoCompatibile(p, s.giorno)) continue;
           const oreGiornoGriglia = slotsByDay.get(s.giorno) ?? [];
           const ultimaOra = oreGiornoGriglia[oreGiornoGriglia.length - 1]?.ora;
-          if (s.ora === ultimaOra) violazioni++;
+          if (s.ora === ultimaOra) violazioniDocente++;
         }
       }
 
@@ -657,13 +739,16 @@ function contaViolazioni(
         for (const ore of giorniConOre.values()) {
           const ordinate = [...ore].sort((a, b) => a - b);
           for (let i = 1; i < ordinate.length; i++) {
-            if (ordinate[i] - ordinate[i - 1] > 1) violazioni++;
+            if (ordinate[i] - ordinate[i - 1] > 1) violazioniDocente++;
           }
         }
       }
     }
+
+    violazioni += violazioniDocente;
+    if (violazioniDocente > 0) docentiViolati.add(teacherId);
   }
-  return violazioni;
+  return { totale: violazioni, docenti: docentiViolati };
 }
 
 // ============================================================
@@ -688,10 +773,15 @@ export async function generaOrarioProgressivo(
   const CHUNK_MS = 200;
   let migliore: GeneraOrarioOutput | null = null;
   let tentativiTotali = 0;
+  // Docenti a cui dare priorita' nel prossimo blocco: si aggiorna ad ogni
+  // blocco riuscito con i docenti che in QUEL tentativo avevano preferenze
+  // violate, cosi' la ricerca "insegue" attivamente il problema invece di
+  // ripartire ogni volta con un ordine delle classi completamente casuale.
+  let docentiPrioritari: Set<number> | undefined = input.docentiPrioritari;
 
   while (Date.now() < input.scadenzaTotale) {
     const scadenzaChunk = Math.min(Date.now() + CHUNK_MS, input.scadenzaTotale);
-    const risultato = generaOrario({ ...input, scadenza: scadenzaChunk });
+    const risultato = generaOrario({ ...input, docentiPrioritari, scadenza: scadenzaChunk });
     tentativiTotali += risultato.tentativi;
 
     if (risultato.riuscito) {
@@ -701,6 +791,7 @@ export async function generaOrarioProgressivo(
       if (!migliore || risultato.preferenzeViolate < migliore.preferenzeViolate) {
         migliore = risultato;
       }
+      docentiPrioritari = risultato.docentiViolati.size > 0 ? risultato.docentiViolati : undefined;
     }
 
     onProgress?.({
@@ -724,5 +815,6 @@ export async function generaOrarioProgressivo(
     preferenzeViolate: 0,
     preferenzeValutabili: input.preferenze.length,
     tentativi: tentativiTotali,
+    docentiViolati: new Set(),
   };
 }
