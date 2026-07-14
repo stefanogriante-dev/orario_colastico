@@ -411,17 +411,26 @@ function passaVincoliGenerici(
   return true;
 }
 
+// Estrae l'elenco di giorni da un dettaglio preferenza, qualunque sia il
+// formato in cui è salvato: quello nuovo a checkbox multiple
+// (dettaglio.giorni: number[]) o quello legacy a giorno singolo
+// (dettaglio.giorno). Ritorna un array vuoto se il dettaglio è assente
+// o non contiene informazioni sul giorno.
+function giorniDaDettaglio(dettaglio: Record<string, unknown> | null): number[] {
+  if (!dettaglio) return [];
+  const d = dettaglio as { giorno?: number; giorni?: number[] };
+  if (Array.isArray(d.giorni)) return d.giorni;
+  if (d.giorno !== undefined && d.giorno !== null) return [d.giorno];
+  return [];
+}
+
 // Le preferenze "no_prima_ora" e "no_ultima_ora" possono valere per uno o
-// più giorni specifici (dettaglio.giorni: number[], selezionati con le
-// checkbox) o per tutti i giorni ("Sempre", rappresentato da dettaglio
-// assente/null). E' supportato anche il vecchio formato a giorno singolo
-// (dettaglio.giorno) per compatibilita' con le preferenze già salvate.
+// più giorni specifici (checkbox) o per tutti i giorni ("Sempre",
+// rappresentato da dettaglio assente/null oppure senza giorni indicati).
 function giornoCompatibile(p: Preferenza, giorno: number): boolean {
-  if (!p.dettaglio) return true;
-  const dettaglio = p.dettaglio as { giorno?: number; giorni?: number[] };
-  if (Array.isArray(dettaglio.giorni)) return dettaglio.giorni.includes(giorno);
-  if (dettaglio.giorno === undefined || dettaglio.giorno === null) return true;
-  return dettaglio.giorno === giorno;
+  const giorni = giorniDaDettaglio(p.dettaglio);
+  if (giorni.length === 0) return true; // "sempre"
+  return giorni.includes(giorno);
 }
 
 // Penalita' di uno slot basata solo sulle preferenze del docente (giorno
@@ -440,9 +449,8 @@ function penalitaPreferenzeSlot(
   const ultimaOra = oreGiorno[oreGiorno.length - 1]?.ora;
 
   for (const p of prefs) {
-    if (p.tipo === "giorno_libero" && p.dettaglio) {
-      const giorno = (p.dettaglio as { giorno?: number }).giorno;
-      if (giorno === slot.giorno) penalita += 50;
+    if (p.tipo === "giorno_libero" && giorniDaDettaglio(p.dettaglio).includes(slot.giorno)) {
+      penalita += 50;
     }
     if (p.tipo === "no_prima_ora" && slot.ora === primaOra && giornoCompatibile(p, slot.giorno)) {
       penalita += 20;
@@ -586,9 +594,10 @@ function contaViolazioni(
       .filter((s): s is TimeSlot => Boolean(s));
 
     for (const p of prefs) {
-      if (p.tipo === "giorno_libero" && p.dettaglio) {
-        const giorno = (p.dettaglio as { giorno?: number }).giorno;
-        if (oreDocente.some((s) => s.giorno === giorno)) violazioni++;
+      if (p.tipo === "giorno_libero") {
+        for (const giorno of giorniDaDettaglio(p.dettaglio)) {
+          if (oreDocente.some((s) => s.giorno === giorno)) violazioni++;
+        }
       }
 
       if (p.tipo === "no_prima_ora") {

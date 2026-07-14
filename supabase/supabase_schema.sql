@@ -68,6 +68,7 @@ create table teachers (
   nome text not null,
   cognome text not null,
   email text,
+  colore text, -- colore esadecimale (es. #60a5fa) scelto da chi inserisce i dati, usato per lo sfondo delle celle nell'orario
   created_at timestamptz not null default now()
 );
 
@@ -92,7 +93,7 @@ create table preferences (
   id bigint generated always as identity primary key,
   teacher_id bigint not null references teachers(id) on delete cascade,
   tipo tipo_preferenza not null,
-  dettaglio jsonb,  -- es. {"giorno": 3} per giorno_libero, {"nota": "..."} per altro
+  dettaglio jsonb,  -- es. {"giorni": [2,4]} per giorno_libero/no_prima_ora/no_ultima_ora (assente = tutti i giorni), {"nota": "..."} per altro
   nota text,
   stato stato_preferenza not null default 'non_valutata',
   created_at timestamptz not null default now()
@@ -108,14 +109,22 @@ create table schedule_entries (
   subject_id bigint not null references subjects(id) on delete restrict,
   time_slot_id bigint not null references time_slots(id) on delete restrict,
   manual boolean not null default false, -- true = inserita a mano da Federica, il motore automatico non la tocca
+  -- eccezione manuale: permette allo stesso docente di essere in due classi
+  -- nello stesso slot (es. Scienze motorie con due classi unite). Si applica
+  -- solo alle ore inserite a mano, mai a quelle generate automaticamente.
+  permette_doppia_classe boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
 
   -- vincolo rigido: una classe non può avere due lezioni nello stesso slot
-  unique (class_id, time_slot_id),
-  -- vincolo rigido: un docente non può essere in due classi diverse nello stesso slot
-  unique (teacher_id, time_slot_id)
+  unique (class_id, time_slot_id)
 );
+
+-- vincolo rigido: un docente non può essere in due classi diverse nello stesso
+-- slot, tranne le righe con permette_doppia_classe = true (escluse dall'indice).
+create unique index schedule_entries_teacher_id_time_slot_id_key
+  on schedule_entries (teacher_id, time_slot_id)
+  where not permette_doppia_classe;
 
 create or replace function set_updated_at()
 returns trigger as $$

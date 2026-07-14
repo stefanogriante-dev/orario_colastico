@@ -10,6 +10,23 @@ const MODALITA_LABEL: Record<Modalita, string> = {
   indifferente: "Indifferente",
 };
 
+// Tavolozza di colori distinguibili proposta di default ai nuovi docenti
+// (Federica può comunque cambiare colore in qualsiasi momento).
+const TAVOLOZZA_COLORI = [
+  "#fca5a5",
+  "#fdba74",
+  "#fde047",
+  "#bef264",
+  "#86efac",
+  "#5eead4",
+  "#67e8f9",
+  "#93c5fd",
+  "#a5b4fc",
+  "#c4b5fd",
+  "#f0abfc",
+  "#f9a8d4",
+];
+
 export default function DocentiPage() {
   const [docenti, setDocenti] = useState<Docente[]>([]);
   const [classi, setClassi] = useState<Classe[]>([]);
@@ -21,13 +38,14 @@ export default function DocentiPage() {
     nome: "",
     cognome: "",
     email: "",
+    colore: TAVOLOZZA_COLORI[0],
   });
   const [docenteAperto, setDocenteAperto] = useState<number | null>(null);
 
   async function caricaTutto() {
     setLoading(true);
     const [d, c, m, a] = await Promise.all([
-      supabase.from("teachers").select("id, nome, cognome, email").order("cognome"),
+      supabase.from("teachers").select("id, nome, cognome, email, colore").order("cognome"),
       supabase
         .from("classes")
         .select("id, anno, sezione, nome")
@@ -64,13 +82,25 @@ export default function DocentiPage() {
       nome: nuovoDocente.nome.trim(),
       cognome: nuovoDocente.cognome.trim(),
       email: nuovoDocente.email.trim() || null,
+      colore: nuovoDocente.colore,
     });
     if (error) {
       setErrore(error.message);
     } else {
       setErrore(null);
-      setNuovoDocente({ nome: "", cognome: "", email: "" });
+      setNuovoDocente({
+        nome: "",
+        cognome: "",
+        email: "",
+        colore: TAVOLOZZA_COLORI[(docenti.length + 1) % TAVOLOZZA_COLORI.length],
+      });
     }
+    caricaTutto();
+  }
+
+  async function cambiaColoreDocente(id: number, colore: string) {
+    const { error } = await supabase.from("teachers").update({ colore }).eq("id", id);
+    setErrore(error ? error.message : null);
     caricaTutto();
   }
 
@@ -182,6 +212,18 @@ export default function DocentiPage() {
               }
             />
           </div>
+          <div>
+            <label className="block text-xs text-gray-500">Colore</label>
+            <input
+              type="color"
+              className="h-8 w-12 cursor-pointer rounded border border-gray-300"
+              value={nuovoDocente.colore}
+              onChange={(e) =>
+                setNuovoDocente((p) => ({ ...p, colore: e.target.value }))
+              }
+              title="Colore usato per le celle di questo docente nell'orario"
+            />
+          </div>
           <button
             type="submit"
             className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white"
@@ -206,6 +248,7 @@ export default function DocentiPage() {
             onElimina={() => eliminaDocente(docente.id)}
             onAggiungiAssegnazione={(form) => aggiungiAssegnazione(docente.id, form)}
             onEliminaAssegnazione={eliminaAssegnazione}
+            onCambiaColore={(colore) => cambiaColoreDocente(docente.id, colore)}
           />
         ))}
         {docenti.length === 0 && !loading && (
@@ -228,6 +271,7 @@ function DocenteRiga({
   onElimina,
   onAggiungiAssegnazione,
   onEliminaAssegnazione,
+  onCambiaColore,
 }: {
   docente: Docente;
   classi: Classe[];
@@ -243,6 +287,7 @@ function DocenteRiga({
     modalita: Modalita;
   }) => void;
   onEliminaAssegnazione: (id: number) => void;
+  onCambiaColore: (colore: string) => void;
 }) {
   const [form, setForm] = useState({
     classId: 0,
@@ -255,15 +300,25 @@ function DocenteRiga({
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
-      <button
-        onClick={onToggle}
-        className="flex w-full items-center justify-between px-4 py-3 text-left"
-      >
-        <span className="font-medium text-gray-900">
-          {docente.cognome} {docente.nome}
-        </span>
-        <span className="text-sm text-gray-500">{oreTotali} ore/settimana</span>
-      </button>
+      <div className="flex items-center justify-between gap-2 px-4 py-3">
+        <button
+          onClick={onToggle}
+          className="flex flex-1 items-center justify-between text-left"
+        >
+          <span className="font-medium text-gray-900">
+            {docente.cognome} {docente.nome}
+          </span>
+          <span className="text-sm text-gray-500">{oreTotali} ore/settimana</span>
+        </button>
+        <input
+          type="color"
+          value={docente.colore ?? "#cccccc"}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => onCambiaColore(e.target.value)}
+          title="Colore di questo docente nell'orario"
+          className="h-7 w-9 shrink-0 cursor-pointer rounded border border-gray-300"
+        />
+      </div>
 
       {aperto && (
         <div className="space-y-3 border-t border-gray-100 px-4 py-3">

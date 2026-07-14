@@ -17,6 +17,7 @@ export interface Docente {
   nome: string;
   cognome: string;
   email: string | null;
+  colore: string | null;
 }
 
 export interface Assegnazione {
@@ -59,4 +60,5 @@ export interface ScheduleEntry {
   subject_id: number;
   time_slot_id: number;
   manual: boolean;
+  permette_doppia_classe: boolean;
 }

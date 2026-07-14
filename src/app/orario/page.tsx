@@ -67,7 +67,7 @@ export default function OrarioPage() {
     setLoading(true);
     const [c, d, m, a, p, sc, ts, en] = await Promise.all([
       supabase.from("classes").select("id, anno, sezione, nome").order("anno").order("sezione"),
-      supabase.from("teachers").select("id, nome, cognome, email").order("cognome"),
+      supabase.from("teachers").select("id, nome, cognome, email, colore").order("cognome"),
       supabase.from("subjects").select("id, nome").order("nome"),
       supabase
         .from("teacher_classes")
@@ -143,12 +143,19 @@ export default function OrarioPage() {
   }
 
   async function confermaAssegnazione(classId: number, slotId: number, teacherId: number, subjectId: number) {
+    // Eccezione: solo per "Scienze motorie" e solo nell'inserimento manuale,
+    // lo stesso docente può comparire nello stesso orario in due classi
+    // diverse (es. due classi unite per l'attività motoria).
+    const materiaSelezionata = materie.find((m) => m.id === subjectId);
+    const permetteDoppiaClasse = materiaSelezionata?.nome.toLowerCase().includes("motori") ?? false;
+
     const { error } = await supabase.from("schedule_entries").insert({
       class_id: classId,
       teacher_id: teacherId,
       subject_id: subjectId,
       time_slot_id: slotId,
       manual: true,
+      permette_doppia_classe: permetteDoppiaClasse,
     });
     if (error) {
       setErrore(traduciErroreConflitto(error.message));
@@ -538,17 +545,16 @@ function CellaOrario({
     return (
       <div
         className={`min-w-[6rem] rounded px-2 py-1 text-xs ${
-          entrata.manual
-            ? "border border-gray-400 bg-white"
-            : "border border-dashed border-gray-300 bg-gray-50"
+          entrata.manual ? "border border-gray-400" : "border border-dashed border-gray-400"
         }`}
+        style={{ backgroundColor: docente?.colore ?? "#f3f4f6" }}
       >
-        <div className="font-medium text-gray-800">{materia?.nome ?? "—"}</div>
-        <div className="text-gray-500">
+        <div className="font-medium text-black">{materia?.nome ?? "—"}</div>
+        <div className="text-black">
           {docente ? `${docente.cognome} ${docente.nome}` : "—"}
         </div>
         {onElimina && (
-          <button onClick={onElimina} className="mt-1 text-[10px] text-red-600 hover:underline">
+          <button onClick={onElimina} className="mt-1 text-[10px] text-black underline hover:opacity-70">
             rimuovi
           </button>
         )}
