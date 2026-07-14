@@ -97,6 +97,13 @@ export interface GeneraOrarioOutput {
   docentiViolati: Set<number>;
   // Elenco dettagliato delle violazioni, da mostrare nell'interfaccia.
   dettagliViolazioni: ViolazionePreferenza[];
+  // Quante ore sono state effettivamente assegnate nel risultato restituito
+  // (nella combinazione completa se riuscito, altrimenti nella migliore
+  // combinazione PARZIALE trovata entro il tempo disponibile) e quante ore
+  // erano complessivamente da assegnare: permettono all'interfaccia di
+  // mostrare quanto e' stato completato anche quando la ricerca fallisce.
+  oreAssegnate: number;
+  oreTotali: number;
 }
 
 interface Unita {
@@ -319,6 +326,20 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     compitiPerClasse.set(classId, costruisciCompiti(unita));
   }
 
+  // Elenco completo di tutte le unita' da piazzare, indipendentemente dalla
+  // classe: serve sia per calcolare le violazioni sulla combinazione finale
+  // completa, sia (vedi migliorParziale piu' sotto) per costruire un
+  // risultato parziale quando la ricerca non riesce a completare l'orario
+  // entro il tempo disponibile.
+  const tutteLeUnitaTotali: Unita[] = [];
+  for (const compiti of compitiPerClasse.values()) {
+    for (const c of compiti) {
+      if (c.tipo === "singola") tutteLeUnitaTotali.push(c.unita);
+      else tutteLeUnitaTotali.push(c.unitaA, c.unitaB);
+    }
+  }
+  const oreTotali = tutteLeUnitaTotali.length;
+
   if (classIds.length === 0) {
     return {
       riuscito: true,
@@ -328,8 +349,24 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
       tentativi: 0,
       docentiViolati: new Set(),
       dettagliViolazioni: [],
+      oreAssegnate: 0,
+      oreTotali: 0,
     };
   }
+
+  // Migliore combinazione PARZIALE (incompleta) trovata finora in questo
+  // giro di generaOrario: si aggiorna ogni volta che una classe si completa
+  // con successo e il numero totale di ore assegnate (su tutte le classi
+  // gia' bloccate) supera il record precedente. Se la ricerca esaurisce il
+  // tempo senza mai completare TUTTE le classi, questa e' la combinazione
+  // che viene restituita al posto di un fallimento totale.
+  let migliorParziale: {
+    entries: EntrataGenerata[];
+    preferenzeViolate: number;
+    dettagliViolazioni: ViolazionePreferenza[];
+    docentiViolati: Set<number>;
+    oreAssegnate: number;
+  } | null = null;
 
   let tentativi = 0;
   // Quanti riordini diversi provare per UNA classe (a parita' di classi gia'
@@ -482,6 +519,25 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
           escluseConMotoriaPerClasseGiorno = provaEscluseConMotoriaPerClasseGiorno;
           giornoSeiOrePerTeacher = provaGiornoSeiOrePerTeacher;
           classeCompletata = true;
+
+          // Aggiorna la migliore combinazione parziale se questa e' la
+          // classe che porta il maggior numero di ore assegnate finora
+          // (su tutte le classi gia' bloccate in questo tentativo esterno).
+          if (pianoGlobale.size > (migliorParziale?.oreAssegnate ?? 0)) {
+            const {
+              totale: violazioniParziali,
+              docenti: docentiViolatiParziali,
+              dettagli: dettagliViolazioniParziali,
+            } = contaViolazioni(tutteLeUnitaTotali, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
+            migliorParziale = {
+              entries: costruisciEntries(tutteLeUnitaTotali, pianoGlobale),
+              preferenzeViolate: violazioniParziali,
+              dettagliViolazioni: dettagliViolazioniParziali,
+              docentiViolati: docentiViolatiParziali,
+              oreAssegnate: pianoGlobale.size,
+            };
+          }
+
           break;
         }
       }
@@ -496,24 +552,12 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
 
     if (tuttoCompletato) {
-      const tutteLeUnita: Unita[] = [];
-      for (const compiti of compitiPerClasse.values()) {
-        for (const c of compiti) {
-          if (c.tipo === "singola") tutteLeUnita.push(c.unita);
-          else tutteLeUnita.push(c.unitaA, c.unitaB);
-        }
-      }
       const {
         totale: violazioni,
         docenti: docentiViolati,
         dettagli: dettagliViolazioni,
-      } = contaViolazioni(tutteLeUnita, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
-      const entries: EntrataGenerata[] = tutteLeUnita.map((u) => ({
-        teacher_id: u.teacherId,
-        class_id: u.classId,
-        subject_id: u.subjectId,
-        time_slot_id: pianoGlobale.get(u.unitaId)!,
-      }));
+      } = contaViolazioni(tutteLeUnitaTotali, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
+      const entries = costruisciEntries(tutteLeUnitaTotali, pianoGlobale);
       return {
         riuscito: true,
         entries,
@@ -522,18 +566,26 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         tentativi,
         docentiViolati,
         dettagliViolazioni,
+        oreAssegnate: entries.length,
+        oreTotali,
       };
     }
   }
 
+  // Nessun tentativo ha completato TUTTE le classi entro il tempo
+  // disponibile: restituiamo comunque la migliore combinazione PARZIALE
+  // trovata (se ce n'e' una), cosi' che l'interfaccia possa mostrarla e
+  // salvarla invece di perdere tutto il lavoro fatto.
   return {
     riuscito: false,
-    entries: [],
-    preferenzeViolate: 0,
+    entries: migliorParziale?.entries ?? [],
+    preferenzeViolate: migliorParziale?.preferenzeViolate ?? 0,
     preferenzeValutabili: preferenze.length,
     tentativi,
-    docentiViolati: new Set(),
-    dettagliViolazioni: [],
+    docentiViolati: migliorParziale?.docentiViolati ?? new Set(),
+    dettagliViolazioni: migliorParziale?.dettagliViolazioni ?? [],
+    oreAssegnate: migliorParziale?.oreAssegnate ?? 0,
+    oreTotali,
   };
 }
 
@@ -541,6 +593,26 @@ function clonaMappaOre(mappa: Map<string, number[]>): Map<string, number[]> {
   const clone = new Map<string, number[]>();
   for (const [chiave, valori] of mappa) clone.set(chiave, [...valori]);
   return clone;
+}
+
+// Costruisce le entrate finali a partire dall'elenco di unita' e dal piano
+// dei piazzamenti, includendo solo le unita' che hanno effettivamente uno
+// slot assegnato (utile anche per combinazioni parziali/incomplete, dove
+// non tutte le unita' sono ancora state piazzate).
+function costruisciEntries(unita: Unita[], piano: Map<number, number>): EntrataGenerata[] {
+  const entries: EntrataGenerata[] = [];
+  for (const u of unita) {
+    const slotId = piano.get(u.unitaId);
+    if (slotId !== undefined) {
+      entries.push({
+        teacher_id: u.teacherId,
+        class_id: u.classId,
+        subject_id: u.subjectId,
+        time_slot_id: slotId,
+      });
+    }
+  }
+  return entries;
 }
 
 function registraPiazzamento(
@@ -1062,6 +1134,11 @@ export async function generaOrarioProgressivo(
   const CHUNK_MS_MASSIMO = 5000;
   let chunkMs = CHUNK_MS_INIZIALE;
   let migliore: GeneraOrarioOutput | null = null;
+  // Migliore combinazione PARZIALE (incompleta) vista in un qualsiasi
+  // blocco, tenuta da parte nel caso in cui nessun blocco riesca mai a
+  // completare l'intero orario entro il tempo totale disponibile: meglio
+  // restituire il meglio ottenuto che un fallimento totale senza nulla.
+  let migliorParziale: GeneraOrarioOutput | null = null;
   let tentativiTotali = 0;
   // Docenti a cui dare priorita' nel prossimo blocco: si aggiorna solo
   // quando si trova un nuovo MIGLIOR risultato (non ad ogni tentativo
@@ -1088,6 +1165,14 @@ export async function generaOrarioProgressivo(
       // Il blocco e' scaduto senza trovare nessuna combinazione completa:
       // era troppo corto per questo orario, il prossimo sara' piu' lungo.
       chunkMs = Math.min(chunkMs * 2, CHUNK_MS_MASSIMO);
+      // Teniamo comunque da parte la migliore combinazione PARZIALE vista in
+      // questo blocco, nel caso non si arrivi mai a una combinazione completa.
+      if (
+        risultato.entries.length > 0 &&
+        (!migliorParziale || risultato.oreAssegnate > migliorParziale.oreAssegnate)
+      ) {
+        migliorParziale = risultato;
+      }
     }
 
     onProgress?.({
@@ -1105,6 +1190,12 @@ export async function generaOrarioProgressivo(
   if (migliore) {
     return { ...migliore, tentativi: tentativiTotali };
   }
+  // Nessun blocco ha mai completato l'intero orario: restituiamo la
+  // migliore combinazione PARZIALE trovata, se ce n'e' una, invece di un
+  // fallimento totale senza nulla da mostrare o salvare.
+  if (migliorParziale) {
+    return { ...migliorParziale, tentativi: tentativiTotali };
+  }
   return {
     riuscito: false,
     entries: [],
@@ -1113,5 +1204,7 @@ export async function generaOrarioProgressivo(
     tentativi: tentativiTotali,
     docentiViolati: new Set(),
     dettagliViolazioni: [],
+    oreAssegnate: 0,
+    oreTotali: 0,
   };
 }

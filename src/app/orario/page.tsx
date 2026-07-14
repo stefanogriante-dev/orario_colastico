@@ -331,37 +331,47 @@ export default function OrarioPage() {
       }
     );
 
-    if (risultato.riuscito) {
+    if (risultato.entries.length > 0) {
+      // Salviamo il risultato anche quando la ricerca non e' riuscita a
+      // completare TUTTE le ore entro il tempo massimo: in quel caso
+      // generaOrarioProgressivo restituisce comunque la migliore
+      // combinazione PARZIALE trovata, che mostriamo e salviamo al posto
+      // di scartare tutto il lavoro fatto.
       const { error: delError } = await supabase.from("schedule_entries").delete().eq("manual", false);
       if (delError) {
         setErrore(delError.message);
         setGenerazioneInCorso(false);
         return;
       }
-      if (risultato.entries.length > 0) {
-        const { error: insError } = await supabase
-          .from("schedule_entries")
-          .insert(risultato.entries.map((e) => ({ ...e, manual: false })));
-        if (insError) {
-          setErrore(insError.message);
-          setGenerazioneInCorso(false);
-          return;
-        }
+      const { error: insError } = await supabase
+        .from("schedule_entries")
+        .insert(risultato.entries.map((e) => ({ ...e, manual: false })));
+      if (insError) {
+        setErrore(insError.message);
+        setGenerazioneInCorso(false);
+        return;
       }
       setErrore(null);
-      setEsitoGenerazione({
-        tipo: "successo",
-        messaggio:
-          risultato.preferenzeViolate === 0
-            ? "Orario completato: tutte le preferenze valutabili sono state rispettate."
-            : `Orario completato con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.`,
-      });
+      if (risultato.riuscito) {
+        setEsitoGenerazione({
+          tipo: "successo",
+          messaggio:
+            risultato.preferenzeViolate === 0
+              ? "Orario completato: tutte le preferenze valutabili sono state rispettate."
+              : `Orario completato con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.`,
+        });
+      } else {
+        setEsitoGenerazione({
+          tipo: "fallimento",
+          messaggio: `Non è stato possibile completare l'orario entro 5 minuti: assegnate ${risultato.oreAssegnate} ore su ${risultato.oreTotali}. È stata salvata la migliore combinazione parziale trovata (${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}, elencate qui sotto). Prova a rimuovere o allentare qualche vincolo e riprova.`,
+        });
+      }
       caricaTutto();
     } else {
       setEsitoGenerazione({
         tipo: "fallimento",
         messaggio:
-          "Non è stato possibile completare l'orario entro 5 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
+          "Non è stato possibile trovare nessuna combinazione valida entro 5 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
       });
     }
 
