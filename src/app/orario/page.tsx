@@ -20,7 +20,7 @@ const GIORNI_TUTTI = [
   { valore: 7, label: "Domenica" },
 ];
 
-const DURATA_GENERAZIONE_MS = 180000;
+const DURATA_GENERAZIONE_MS = 300000;
 
 const TIPO_LABEL: Record<ViolazionePreferenza["tipo"], string> = {
   giorno_libero: "Giorno libero",
@@ -310,7 +310,7 @@ export default function OrarioPage() {
       setEsitoGenerazione({
         tipo: "fallimento",
         messaggio:
-          "Non è stato possibile completare l'orario entro 3 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
+          "Non è stato possibile completare l'orario entro 5 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
       });
     }
 
@@ -398,7 +398,7 @@ export default function OrarioPage() {
 
             {generazioneInCorso && progresso && (
               <p className="mt-2 text-xs text-gray-500">
-                Ricerca in corso... {progresso.secondi}s / 180s — {progresso.tentativi} tentativi
+                Ricerca in corso... {progresso.secondi}s / 300s — {progresso.tentativi} tentativi
               </p>
             )}
 
