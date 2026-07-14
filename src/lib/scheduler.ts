@@ -77,6 +77,7 @@ export interface ViolazionePreferenza {
   teacherId: number;
   tipo: Preferenza["tipo"];
   giorno?: number;
+  ora?: number;
 }
 
 export interface GeneraOrarioOutput {
@@ -543,6 +544,15 @@ function giornoCompatibile(p: Preferenza, giorno: number): boolean {
   return giorni.includes(giorno);
 }
 
+// Estrae il numero d'ora richiesto dal dettaglio della preferenza
+// "no_ora_specifica" (es. { ora: 3, giorni: [1, 3] }). Ritorna undefined se
+// il dettaglio è assente o non contiene un'ora valida.
+function oraDaDettaglio(dettaglio: Record<string, unknown> | null): number | undefined {
+  if (!dettaglio) return undefined;
+  const d = dettaglio as { ora?: number };
+  return typeof d.ora === "number" ? d.ora : undefined;
+}
+
 // Penalita' di uno slot basata solo sulle preferenze del docente (giorno
 // libero, no prima/ultima ora, evita buchi). Usata sia per le ore singole
 // sia per ciascuna meta' di una coppia.
@@ -567,6 +577,12 @@ function penalitaPreferenzeSlot(
     }
     if (p.tipo === "no_ultima_ora" && slot.ora === ultimaOra && giornoCompatibile(p, slot.giorno)) {
       penalita += 20;
+    }
+    if (p.tipo === "no_ora_specifica") {
+      const oraRichiesta = oraDaDettaglio(p.dettaglio);
+      if (oraRichiesta !== undefined && slot.ora === oraRichiesta && giornoCompatibile(p, slot.giorno)) {
+        penalita += 20;
+      }
     }
   }
 
@@ -748,6 +764,19 @@ function contaViolazioni(
           if (s.ora === ultimaOra) {
             violazioniDocente++;
             dettagli.push({ teacherId, tipo: p.tipo, giorno: s.giorno });
+          }
+        }
+      }
+
+      if (p.tipo === "no_ora_specifica") {
+        const oraRichiesta = oraDaDettaglio(p.dettaglio);
+        if (oraRichiesta !== undefined) {
+          for (const s of oreDocente) {
+            if (!giornoCompatibile(p, s.giorno)) continue;
+            if (s.ora === oraRichiesta) {
+              violazioniDocente++;
+              dettagli.push({ teacherId, tipo: p.tipo, giorno: s.giorno, ora: s.ora });
+            }
           }
         }
       }

@@ -26,6 +26,7 @@ const TIPO_LABEL: Record<ViolazionePreferenza["tipo"], string> = {
   giorno_libero: "Giorno libero",
   no_prima_ora: "Evita la prima ora",
   no_ultima_ora: "Evita l'ultima ora",
+  no_ora_specifica: "Evita un'ora specifica",
   evita_buchi: "Evita ore buche",
   altro: "Altro",
 };
@@ -431,10 +432,13 @@ export default function OrarioPage() {
                   const docente = docenteById.get(v.teacherId);
                   const nomeDocente = docente ? `${docente.cognome} ${docente.nome}` : "Docente sconosciuto";
                   const giorno = giornoLabel(v.giorno);
+                  const dettagli = [v.ora ? `${v.ora}ª ora` : null, giorno || null]
+                    .filter(Boolean)
+                    .join(", ");
                   return (
                     <li key={i}>
                       {nomeDocente}: {TIPO_LABEL[v.tipo]}
-                      {giorno ? ` (${giorno})` : ""}
+                      {dettagli ? ` (${dettagli})` : ""}
                     </li>
                   );
                 })}

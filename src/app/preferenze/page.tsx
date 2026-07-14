@@ -13,6 +13,7 @@ const TIPO_LABEL: Record<TipoPreferenza, string> = {
   giorno_libero: "Giorno libero",
   no_prima_ora: "Evita la prima ora",
   no_ultima_ora: "Evita l'ultima ora",
+  no_ora_specifica: "Evita un'ora specifica",
   evita_buchi: "Evita ore buche",
   altro: "Altro",
 };
@@ -43,18 +44,20 @@ export default function PreferenzePage() {
   const [docenti, setDocenti] = useState<Docente[]>([]);
   const [preferenze, setPreferenze] = useState<Preferenza[]>([]);
   const [giorniSettimana, setGiorniSettimana] = useState(6);
+  const [oreMax, setOreMax] = useState(6);
   const [loading, setLoading] = useState(true);
   const [errore, setErrore] = useState<string | null>(null);
   const [docenteAperto, setDocenteAperto] = useState<number | null>(null);
 
   async function caricaTutto() {
     setLoading(true);
-    const [d, p, sc] = await Promise.all([
+    const [d, p, sc, ts] = await Promise.all([
       supabase.from("teachers").select("id, nome, cognome, email").order("cognome"),
       supabase
         .from("preferences")
         .select("id, teacher_id, tipo, dettaglio, nota, stato"),
       supabase.from("school_config").select("giorni_settimana").eq("id", 1).single(),
+      supabase.from("time_slots").select("ora"),
     ]);
     const errori = [d.error, p.error].filter(Boolean);
     if (errori.length > 0) {
@@ -63,6 +66,8 @@ export default function PreferenzePage() {
       setDocenti((d.data as Docente[]) ?? []);
       setPreferenze((p.data as Preferenza[]) ?? []);
       if (sc.data) setGiorniSettimana((sc.data as { giorni_settimana: number }).giorni_settimana);
+      const ore = ((ts.data as { ora: number }[]) ?? []).map((s) => s.ora);
+      if (ore.length > 0) setOreMax(Math.max(...ore));
       setErrore(null);
     }
     setLoading(false);
@@ -77,6 +82,7 @@ export default function PreferenzePage() {
     form: {
       tipo: TipoPreferenza;
       giorniMultipli: number[];
+      oraSpecifica: number;
       nota: string;
     }
   ) {
@@ -88,6 +94,13 @@ export default function PreferenzePage() {
       // tutti i giorni selezionati (checkbox) = "Sempre": nessun dettaglio
       const tuttiSelezionati = giorni.every((g) => form.giorniMultipli.includes(g.valore));
       dettaglio = tuttiSelezionati ? null : { giorni: [...form.giorniMultipli].sort((a, b) => a - b) };
+    }
+    if (form.tipo === "no_ora_specifica") {
+      // tutti i giorni selezionati (checkbox) = "Sempre": solo l'ora nel dettaglio
+      const tuttiSelezionati = giorni.every((g) => form.giorniMultipli.includes(g.valore));
+      dettaglio = tuttiSelezionati
+        ? { ora: form.oraSpecifica }
+        : { ora: form.oraSpecifica, giorni: [...form.giorniMultipli].sort((a, b) => a - b) };
     }
 
     const { error } = await supabase.from("preferences").insert({
@@ -121,8 +134,9 @@ export default function PreferenzePage() {
         <h1 className="text-2xl font-semibold text-gray-900">Preferenze</h1>
         <p className="mt-1 text-gray-600">
           Vincoli espressi dai docenti: giorno libero, evitare prima/ultima
-          ora, evitare buchi, ore consecutive o separate (queste ultime si
-          impostano nella pagina Docenti).
+          ora o una qualsiasi altra ora specifica, evitare buchi, ore
+          consecutive o separate (queste ultime si impostano nella pagina
+          Docenti).
         </p>
       </div>
 
@@ -138,6 +152,7 @@ export default function PreferenzePage() {
             key={docente.id}
             docente={docente}
             giorni={giorni}
+            oreMax={oreMax}
             preferenze={preferenze.filter((p) => p.teacher_id === docente.id)}
             aperto={docenteAperto === docente.id}
             onToggle={() =>
@@ -163,6 +178,7 @@ export default function PreferenzePage() {
 function DocentePreferenze({
   docente,
   giorni,
+  oreMax,
   preferenze,
   aperto,
   onToggle,
@@ -172,12 +188,14 @@ function DocentePreferenze({
 }: {
   docente: Docente;
   giorni: { valore: number; label: string }[];
+  oreMax: number;
   preferenze: Preferenza[];
   aperto: boolean;
   onToggle: () => void;
   onAggiungi: (form: {
     tipo: TipoPreferenza;
     giorniMultipli: number[];
+    oraSpecifica: number;
     nota: string;
   }) => void;
   onCambiaStato: (id: number, stato: StatoPreferenza) => void;
@@ -186,6 +204,7 @@ function DocentePreferenze({
   const [form, setForm] = useState({
     tipo: "giorno_libero" as TipoPreferenza,
     giorniMultipli: giorni[0] ? [giorni[0].valore] : [],
+    oraSpecifica: 1,
     nota: "",
   });
 
@@ -210,6 +229,11 @@ function DocentePreferenze({
     if (p.tipo === "no_prima_ora" || p.tipo === "no_ultima_ora") {
       const elenco = elencoGiorni(p.dettaglio);
       return `${TIPO_LABEL[p.tipo]}: ${elenco ?? "sempre"}`;
+    }
+    if (p.tipo === "no_ora_specifica") {
+      const ora = (p.dettaglio as { ora?: number } | null)?.ora;
+      const elenco = elencoGiorni(p.dettaglio);
+      return `${TIPO_LABEL[p.tipo]} (ora ${ora ?? "?"}): ${elenco ?? "sempre"}`;
     }
     return TIPO_LABEL[p.tipo];
   }
@@ -282,7 +306,9 @@ function DocentePreferenze({
                     ...p,
                     tipo: nuovoTipo,
                     giorniMultipli:
-                      nuovoTipo === "no_prima_ora" || nuovoTipo === "no_ultima_ora"
+                      nuovoTipo === "no_prima_ora" ||
+                      nuovoTipo === "no_ultima_ora" ||
+                      nuovoTipo === "no_ora_specifica"
                         ? giorni.map((g) => g.valore)
                         : nuovoTipo === "giorno_libero"
                         ? giorni[0]
@@ -300,9 +326,29 @@ function DocentePreferenze({
               </select>
             </div>
 
+            {form.tipo === "no_ora_specifica" && (
+              <div>
+                <label className="block text-xs text-gray-500">Ora da evitare</label>
+                <select
+                  className="rounded border border-gray-300 px-2 py-1 text-sm"
+                  value={form.oraSpecifica}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, oraSpecifica: Number(e.target.value) }))
+                  }
+                >
+                  {Array.from({ length: oreMax }, (_, i) => i + 1).map((ora) => (
+                    <option key={ora} value={ora}>
+                      {ora}ª ora
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {(form.tipo === "giorno_libero" ||
               form.tipo === "no_prima_ora" ||
-              form.tipo === "no_ultima_ora") && (
+              form.tipo === "no_ultima_ora" ||
+              form.tipo === "no_ora_specifica") && (
               <div>
                 <label className="block text-xs text-gray-500">
                   {form.tipo === "giorno_libero" ? "Giorni liberi" : "Giorni (tutti = sempre)"}
@@ -350,7 +396,8 @@ function DocentePreferenze({
               disabled={
                 (form.tipo === "giorno_libero" ||
                   form.tipo === "no_prima_ora" ||
-                  form.tipo === "no_ultima_ora") &&
+                  form.tipo === "no_ultima_ora" ||
+                  form.tipo === "no_ora_specifica") &&
                 form.giorniMultipli.length === 0
               }
               className="rounded bg-gray-900 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:opacity-40"

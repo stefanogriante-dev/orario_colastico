@@ -33,6 +33,7 @@ export type TipoPreferenza =
   | "giorno_libero"
   | "no_prima_ora"
   | "no_ultima_ora"
+  | "no_ora_specifica"
   | "evita_buchi"
   | "altro";
 
