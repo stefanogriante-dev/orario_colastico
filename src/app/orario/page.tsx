@@ -2,7 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { generaOrarioProgressivo, type AssegnazioneInput } from "@/lib/scheduler";
+import {
+  generaOrarioProgressivo,
+  type AssegnazioneInput,
+  type ViolazionePreferenza,
+} from "@/lib/scheduler";
 import { esportaOrarioPerClassi } from "@/lib/exportExcel";
 import type { Classe, Docente, Materia, Preferenza, TimeSlot } from "@/lib/types";
 
@@ -16,7 +20,20 @@ const GIORNI_TUTTI = [
   { valore: 7, label: "Domenica" },
 ];
 
-const DURATA_GENERAZIONE_MS = 120000;
+const DURATA_GENERAZIONE_MS = 180000;
+
+const TIPO_LABEL: Record<ViolazionePreferenza["tipo"], string> = {
+  giorno_libero: "Giorno libero",
+  no_prima_ora: "Evita la prima ora",
+  no_ultima_ora: "Evita l'ultima ora",
+  evita_buchi: "Evita ore buche",
+  altro: "Altro",
+};
+
+function giornoLabel(giorno: number | undefined): string {
+  if (giorno === undefined) return "";
+  return GIORNI_TUTTI.find((g) => g.valore === giorno)?.label ?? "";
+}
 
 interface EntrataOrario {
   id: number;
@@ -63,6 +80,7 @@ export default function OrarioPage() {
   const [esitoGenerazione, setEsitoGenerazione] = useState<
     { tipo: "successo" | "fallimento"; messaggio: string } | null
   >(null);
+  const [violazioniDettaglio, setViolazioniDettaglio] = useState<ViolazionePreferenza[]>([]);
 
   async function caricaTutto() {
     setLoading(true);
@@ -233,6 +251,7 @@ export default function OrarioPage() {
   async function generaAutomaticamente() {
     setGenerazioneInCorso(true);
     setEsitoGenerazione(null);
+    setViolazioniDettaglio([]);
     setProgresso({ tentativi: 0, secondi: 0 });
 
     const entrateManualiComplete = entrate.filter((e) => e.manual);
@@ -285,12 +304,13 @@ export default function OrarioPage() {
             ? "Orario completato: tutte le preferenze valutabili sono state rispettate."
             : `Orario completato con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.`,
       });
+      setViolazioniDettaglio(risultato.dettagliViolazioni);
       caricaTutto();
     } else {
       setEsitoGenerazione({
         tipo: "fallimento",
         messaggio:
-          "Non è stato possibile completare l'orario entro 2 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
+          "Non è stato possibile completare l'orario entro 3 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
       });
     }
 
@@ -378,7 +398,7 @@ export default function OrarioPage() {
 
             {generazioneInCorso && progresso && (
               <p className="mt-2 text-xs text-gray-500">
-                Ricerca in corso... {progresso.secondi}s / 120s — {progresso.tentativi} tentativi
+                Ricerca in corso... {progresso.secondi}s / 180s — {progresso.tentativi} tentativi
               </p>
             )}
 
@@ -400,6 +420,27 @@ export default function OrarioPage() {
               tratteggiato) vengono ricalcolate ad ogni nuova generazione.
             </p>
           </div>
+
+          {violazioniDettaglio.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <h2 className="text-sm font-medium text-amber-800">
+                Preferenze non rispettate ({violazioniDettaglio.length})
+              </h2>
+              <ul className="mt-2 space-y-1 text-sm text-amber-700">
+                {violazioniDettaglio.map((v, i) => {
+                  const docente = docenteById.get(v.teacherId);
+                  const nomeDocente = docente ? `${docente.cognome} ${docente.nome}` : "Docente sconosciuto";
+                  const giorno = giornoLabel(v.giorno);
+                  return (
+                    <li key={i}>
+                      {nomeDocente}: {TIPO_LABEL[v.tipo]}
+                      {giorno ? ` (${giorno})` : ""}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
 
           <div className="space-y-10">
             {classi.map((classe) => (

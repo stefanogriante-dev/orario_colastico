@@ -70,6 +70,15 @@ function limiteOreGiorno(teacherId: number, limiti: Map<number, number> | undefi
   return limiti?.get(teacherId) ?? LIMITE_ORE_GIORNO_DEFAULT;
 }
 
+// Descrive una singola violazione di preferenza nel risultato, per poterla
+// mostrare nell'interfaccia (docente, tipo di preferenza e giorno in cui
+// e' stata violata, quando applicabile).
+export interface ViolazionePreferenza {
+  teacherId: number;
+  tipo: Preferenza["tipo"];
+  giorno?: number;
+}
+
 export interface GeneraOrarioOutput {
   riuscito: boolean;
   entries: EntrataGenerata[];
@@ -80,6 +89,8 @@ export interface GeneraOrarioOutput {
   // usato da generaOrarioProgressivo per dare priorita' alle loro classi
   // nel tentativo successivo.
   docentiViolati: Set<number>;
+  // Elenco dettagliato delle violazioni, da mostrare nell'interfaccia.
+  dettagliViolazioni: ViolazionePreferenza[];
 }
 
 interface Unita {
@@ -276,6 +287,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
       preferenzeValutabili: 0,
       tentativi: 0,
       docentiViolati: new Set(),
+      dettagliViolazioni: [],
     };
   }
 
@@ -419,13 +431,11 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
           else tutteLeUnita.push(c.unitaA, c.unitaB);
         }
       }
-      const { totale: violazioni, docenti: docentiViolati } = contaViolazioni(
-        tutteLeUnita,
-        pianoGlobale,
-        slotById,
-        prefsByTeacher,
-        slotsByDay
-      );
+      const {
+        totale: violazioni,
+        docenti: docentiViolati,
+        dettagli: dettagliViolazioni,
+      } = contaViolazioni(tutteLeUnita, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
       const entries: EntrataGenerata[] = tutteLeUnita.map((u) => ({
         teacher_id: u.teacherId,
         class_id: u.classId,
@@ -439,6 +449,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         preferenzeValutabili: preferenze.length,
         tentativi,
         docentiViolati,
+        dettagliViolazioni,
       };
     }
   }
@@ -450,6 +461,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     preferenzeValutabili: preferenze.length,
     tentativi,
     docentiViolati: new Set(),
+    dettagliViolazioni: [],
   };
 }
 
@@ -694,9 +706,10 @@ function contaViolazioni(
   slotById: Map<number, TimeSlot>,
   prefsByTeacher: Map<number, Preferenza[]>,
   slotsByDay: Map<number, TimeSlot[]>
-): { totale: number; docenti: Set<number> } {
+): { totale: number; docenti: Set<number>; dettagli: ViolazionePreferenza[] } {
   let violazioni = 0;
   const docentiViolati = new Set<number>();
+  const dettagli: ViolazionePreferenza[] = [];
   for (const [teacherId, prefs] of prefsByTeacher.entries()) {
     const oreDocente = unita
       .filter((u) => u.teacherId === teacherId)
@@ -708,7 +721,10 @@ function contaViolazioni(
     for (const p of prefs) {
       if (p.tipo === "giorno_libero") {
         for (const giorno of giorniDaDettaglio(p.dettaglio)) {
-          if (oreDocente.some((s) => s.giorno === giorno)) violazioniDocente++;
+          if (oreDocente.some((s) => s.giorno === giorno)) {
+            violazioniDocente++;
+            dettagli.push({ teacherId, tipo: p.tipo, giorno });
+          }
         }
       }
 
@@ -717,7 +733,10 @@ function contaViolazioni(
           if (!giornoCompatibile(p, s.giorno)) continue;
           const oreGiornoGriglia = slotsByDay.get(s.giorno) ?? [];
           const primaOra = oreGiornoGriglia[0]?.ora;
-          if (s.ora === primaOra) violazioniDocente++;
+          if (s.ora === primaOra) {
+            violazioniDocente++;
+            dettagli.push({ teacherId, tipo: p.tipo, giorno: s.giorno });
+          }
         }
       }
 
@@ -726,7 +745,10 @@ function contaViolazioni(
           if (!giornoCompatibile(p, s.giorno)) continue;
           const oreGiornoGriglia = slotsByDay.get(s.giorno) ?? [];
           const ultimaOra = oreGiornoGriglia[oreGiornoGriglia.length - 1]?.ora;
-          if (s.ora === ultimaOra) violazioniDocente++;
+          if (s.ora === ultimaOra) {
+            violazioniDocente++;
+            dettagli.push({ teacherId, tipo: p.tipo, giorno: s.giorno });
+          }
         }
       }
 
@@ -736,10 +758,13 @@ function contaViolazioni(
           if (!giorniConOre.has(s.giorno)) giorniConOre.set(s.giorno, []);
           giorniConOre.get(s.giorno)!.push(s.ora);
         }
-        for (const ore of giorniConOre.values()) {
+        for (const [giorno, ore] of giorniConOre.entries()) {
           const ordinate = [...ore].sort((a, b) => a - b);
           for (let i = 1; i < ordinate.length; i++) {
-            if (ordinate[i] - ordinate[i - 1] > 1) violazioniDocente++;
+            if (ordinate[i] - ordinate[i - 1] > 1) {
+              violazioniDocente++;
+              dettagli.push({ teacherId, tipo: p.tipo, giorno });
+            }
           }
         }
       }
@@ -748,7 +773,7 @@ function contaViolazioni(
     violazioni += violazioniDocente;
     if (violazioniDocente > 0) docentiViolati.add(teacherId);
   }
-  return { totale: violazioni, docenti: docentiViolati };
+  return { totale: violazioni, docenti: docentiViolati, dettagli };
 }
 
 // ============================================================
@@ -831,5 +856,6 @@ export async function generaOrarioProgressivo(
     preferenzeValutabili: input.preferenze.length,
     tentativi: tentativiTotali,
     docentiViolati: new Set(),
+    dettagliViolazioni: [],
   };
 }
