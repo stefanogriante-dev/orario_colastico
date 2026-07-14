@@ -70,7 +70,6 @@ export interface ScheduleEntry {
 export interface ConfigurazioneScuola {
   giorni_settimana: number;
   vincolo_max_ore_classe_giorno: boolean;
-  vincolo_adiacenza_materia: boolean;
   vincolo_max_ore_giorno_docente: boolean;
   limite_ore_giorno_normale: number;
   limite_ore_giorno_eccezione: number;

@@ -36,10 +36,10 @@ create table school_config (
   giorni_settimana smallint not null default 6, -- es. lun-sab = 6
 
   -- Vincoli rigidi opzionali (disattivabili): a differenza dei vincoli
-  -- strutturali (doppie prenotazioni, ore manuali fisse), sempre attivi e
-  -- non configurabili, questi possono essere disattivati da chi usa l'app.
+  -- strutturali (doppie prenotazioni, ore manuali fisse, materia ripetuta
+  -- nello stesso giorno sempre adiacente), sempre attivi e non
+  -- configurabili, questi possono essere disattivati da chi usa l'app.
   vincolo_max_ore_classe_giorno boolean not null default true, -- max 2 ore/giorno stessa coppia docente-classe
-  vincolo_adiacenza_materia boolean not null default true, -- materia ripetuta nello stesso giorno deve essere adiacente
   vincolo_max_ore_giorno_docente boolean not null default true, -- massimo ore/giorno per docente
   limite_ore_giorno_normale smallint not null default 5, -- soglia normale (usata solo se il vincolo sopra è attivo)
   limite_ore_giorno_eccezione smallint not null default 6, -- soglia eccezione, una sola giornata a settimana

@@ -64,9 +64,12 @@ export interface GeneraOrarioInput {
   materieEscluseConMotoria?: Set<number>;
   // Vincoli rigidi opzionali: attivabili/disattivabili da chi usa l'app
   // (impostazioni salvate in school_config). Se assente si usano i default
-  // (tutti attivi, soglie 5/6). Il vincolo Motoria/Arte/Tecnologia non è
+  // (tutti attivi, soglia 5/6). Il vincolo Motoria/Arte/Tecnologia non è
   // incluso qui: si disattiva semplicemente non passando materieMotoria /
-  // materieEscluseConMotoria (o passandoli vuoti).
+  // materieEscluseConMotoria (o passandoli vuoti). Il vincolo di adiacenza
+  // per materia ripetuta nello stesso giorno non è incluso qui: è
+  // strutturale, non disattivabile, ma si applica solo alle assegnazioni
+  // con modalita' "a coppie" (vedi passaVincoliGenerici piu' sotto).
   vincoliOpzionali?: VincoliOpzionali;
   scadenza: number; // Date.now() + millisecondi disponibili
 }
@@ -78,9 +81,6 @@ export interface GeneraOrarioInput {
 export interface VincoliOpzionali {
   // Massimo 2 ore al giorno per la stessa coppia docente-classe.
   maxOreClasseGiorno: boolean;
-  // Se la stessa materia (stesso docente/classe) ricorre più volte nello
-  // stesso giorno, le ore devono essere consecutive (mai "sparse").
-  adiacenzaMateriaRipetuta: boolean;
   // Vincolo rigido sulle ore giornaliere di un docente (somma su tutte le
   // classi): normalmente al massimo limiteOreGiornoNormale ore al giorno,
   // ma ogni docente può avere UNA sola giornata della settimana con
@@ -95,7 +95,6 @@ export interface VincoliOpzionali {
 
 export const DEFAULT_VINCOLI_OPZIONALI: VincoliOpzionali = {
   maxOreClasseGiorno: true,
-  adiacenzaMateriaRipetuta: true,
   maxOreGiornoDocente: true,
   limiteOreGiornoNormale: 5,
   limiteOreGiornoEccezione: 6,
@@ -725,10 +724,17 @@ function registraPiazzamento(
   }
 }
 
-// Vincoli generici rigidi, sempre validi indipendentemente dalla modalita':
-// (1) un docente non può avere più di 2 ore al giorno nella stessa classe;
+// Vincoli generici rigidi:
+// (1) un docente non può avere più di 2 ore al giorno nella stessa classe
+//     (opzionale, disattivabile: vincoli.maxOreClasseGiorno);
 // (2) se la stessa materia (stesso docente/classe) compare più volte nello
-//     stesso giorno, le ore devono essere consecutive (mai "sparse").
+//     stesso giorno E la modalita' e' "a coppie", le ore devono essere
+//     consecutive (mai "sparse") — quando se ne piazza una in un giorno,
+//     un'altra ora della stessa materia va nella casella immediatamente
+//     successiva dello stesso giorno, fino a un massimo di 2 ore
+//     consecutive. Vincolo STRUTTURALE (non disattivabile dall'interfaccia)
+//     ma si applica SOLO alle assegnazioni con modalita' "a coppie": per
+//     "separate" e "indifferente" non c'è nessun vincolo di adiacenza.
 function passaVincoliGenerici(
   u: Unita,
   slot: TimeSlot,
@@ -742,7 +748,7 @@ function passaVincoliGenerici(
     if (oreEsistentiTCG >= 2) return false;
   }
 
-  if (vincoli.adiacenzaMateriaRipetuta) {
+  if (u.modalita === "coppie") {
     const chiaveAG = `${u.assegnazioneId}-${slot.giorno}`;
     const oreEsistentiAG = orePerAssegnazioneGiorno.get(chiaveAG) ?? [];
     if (oreEsistentiAG.length > 0) {
@@ -935,18 +941,18 @@ function piazzaSingola(
   }
 
   if (u.modalita === "separate") {
-    // preferisci un giorno in cui questa materia non ha ancora ore: se per
+    // preferisci un giorno in cui questa materia non ha ancora ore, per
+    // disperdere le ore invece di accumularle nello stesso giorno: se per
     // forza di cose deve finire nello stesso giorno di un'altra ora della
-    // stessa materia, il filtro sui vincoli generici garantisce già che sia
-    // adiacente (mai "sparsa" nello stesso giorno).
+    // stessa materia, non c'è nessun vincolo di adiacenza da rispettare
+    // (l'adiacenza obbligatoria vale solo per la modalita' "a coppie").
     const chiaveAssegnazioneGiorno = (giorno: number) => `${u.assegnazioneId}-${giorno}`;
     const giorniLiberi = liberi.filter((slot) => {
       const oreEsistenti = orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno(slot.giorno)) ?? [];
       return oreEsistenti.length === 0;
     });
     if (giorniLiberi.length > 0) return migliorFra(giorniLiberi);
-    // nessun giorno libero per questa materia: ripiega sugli slot validi
-    // rimasti (già garantiti adiacenti se nello stesso giorno)
+    // nessun giorno libero per questa materia: ripiega sugli slot validi rimasti
   }
 
   return migliorFra(liberi);
@@ -993,9 +999,9 @@ function piazzaCoppia(
       }
 
       // se questa materia ha già un'ora quel giorno non c'è più spazio per
-      // una coppia intera (supererebbe le 2 ore/giorno consentite), se il
-      // vincolo di adiacenza e' attivo
-      if (vincoli.adiacenzaMateriaRipetuta) {
+      // una coppia intera (supererebbe le 2 ore/giorno consentite): vincolo
+      // strutturale di adiacenza, sempre attivo
+      {
         const chiaveAG = `${u.assegnazioneId}-${slot1.giorno}`;
         const oreEsistentiAG = orePerAssegnazioneGiorno.get(chiaveAG) ?? [];
         if (oreEsistentiAG.length > 0) continue;

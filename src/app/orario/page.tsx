@@ -3,11 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
-  generaOrarioProgressivo,
   calcolaViolazioni,
   type AssegnazioneInput,
   type ViolazionePreferenza,
 } from "@/lib/scheduler";
+import { generaOrarioParallelo } from "@/lib/schedulerParallelo";
 import { esportaOrarioPerClassi } from "@/lib/exportExcel";
 import type { Classe, ConfigurazioneScuola, Docente, Materia, Preferenza, TimeSlot } from "@/lib/types";
 
@@ -27,7 +27,6 @@ const GIORNI_TUTTI = [
 const IMPOSTAZIONI_DEFAULT: ConfigurazioneScuola = {
   giorni_settimana: 6,
   vincolo_max_ore_classe_giorno: true,
-  vincolo_adiacenza_materia: true,
   vincolo_max_ore_giorno_docente: true,
   limite_ore_giorno_normale: 5,
   limite_ore_giorno_eccezione: 6,
@@ -96,7 +95,11 @@ export default function OrarioPage() {
 
   const [generazioneInCorso, setGenerazioneInCorso] = useState(false);
   const [operazioneInCorso, setOperazioneInCorso] = useState(false);
-  const [progresso, setProgresso] = useState<{ tentativi: number; secondi: number } | null>(null);
+  const [progresso, setProgresso] = useState<{
+    tentativi: number;
+    secondi: number;
+    workerAttivi?: number;
+  } | null>(null);
   const [esitoGenerazione, setEsitoGenerazione] = useState<
     { tipo: "successo" | "fallimento"; messaggio: string } | null
   >(null);
@@ -114,7 +117,7 @@ export default function OrarioPage() {
       supabase
         .from("school_config")
         .select(
-          "giorni_settimana, vincolo_max_ore_classe_giorno, vincolo_adiacenza_materia, vincolo_max_ore_giorno_docente, limite_ore_giorno_normale, limite_ore_giorno_eccezione, vincolo_motoria_arte_tecnologia, durata_generazione_minuti"
+          "giorni_settimana, vincolo_max_ore_classe_giorno, vincolo_max_ore_giorno_docente, limite_ore_giorno_normale, limite_ore_giorno_eccezione, vincolo_motoria_arte_tecnologia, durata_generazione_minuti"
         )
         .eq("id", 1)
         .single(),
@@ -144,8 +147,6 @@ export default function OrarioPage() {
           giorni_settimana: giorniConfigurati,
           vincolo_max_ore_classe_giorno:
             configCaricata.vincolo_max_ore_classe_giorno ?? IMPOSTAZIONI_DEFAULT.vincolo_max_ore_classe_giorno,
-          vincolo_adiacenza_materia:
-            configCaricata.vincolo_adiacenza_materia ?? IMPOSTAZIONI_DEFAULT.vincolo_adiacenza_materia,
           vincolo_max_ore_giorno_docente:
             configCaricata.vincolo_max_ore_giorno_docente ?? IMPOSTAZIONI_DEFAULT.vincolo_max_ore_giorno_docente,
           limite_ore_giorno_normale:
@@ -263,7 +264,6 @@ export default function OrarioPage() {
       .from("school_config")
       .update({
         vincolo_max_ore_classe_giorno: nuove.vincolo_max_ore_classe_giorno,
-        vincolo_adiacenza_materia: nuove.vincolo_adiacenza_materia,
         vincolo_max_ore_giorno_docente: nuove.vincolo_max_ore_giorno_docente,
         limite_ore_giorno_normale: nuove.limite_ore_giorno_normale,
         limite_ore_giorno_eccezione: nuove.limite_ore_giorno_eccezione,
@@ -374,7 +374,7 @@ export default function OrarioPage() {
     const inizio = Date.now();
     const durataMs = impostazioni.durata_generazione_minuti * 60000;
 
-    const risultato = await generaOrarioProgressivo(
+    const risultato = await generaOrarioParallelo(
       {
         timeSlots,
         assegnazioni,
@@ -393,7 +393,6 @@ export default function OrarioPage() {
           : undefined,
         vincoliOpzionali: {
           maxOreClasseGiorno: impostazioni.vincolo_max_ore_classe_giorno,
-          adiacenzaMateriaRipetuta: impostazioni.vincolo_adiacenza_materia,
           maxOreGiornoDocente: impostazioni.vincolo_max_ore_giorno_docente,
           limiteOreGiornoNormale: impostazioni.limite_ore_giorno_normale,
           limiteOreGiornoEccezione: impostazioni.limite_ore_giorno_eccezione,
@@ -404,6 +403,7 @@ export default function OrarioPage() {
         setProgresso({
           tentativi: p.tentativiTotali,
           secondi: Math.round(p.tempoTrascorsoMs / 1000),
+          workerAttivi: p.workerAttivi,
         });
       }
     );
@@ -552,16 +552,6 @@ export default function OrarioPage() {
                 <label className="flex items-center gap-2 text-sm text-gray-700">
                   <input
                     type="checkbox"
-                    checked={impostazioni.vincolo_adiacenza_materia}
-                    onChange={(e) =>
-                      aggiornaImpostazioni({ vincolo_adiacenza_materia: e.target.checked })
-                    }
-                  />
-                  Materia ripetuta nello stesso giorno deve essere adiacente
-                </label>
-                <label className="flex items-center gap-2 text-sm text-gray-700">
-                  <input
-                    type="checkbox"
                     checked={impostazioni.vincolo_motoria_arte_tecnologia}
                     onChange={(e) =>
                       aggiornaImpostazioni({ vincolo_motoria_arte_tecnologia: e.target.checked })
@@ -625,7 +615,11 @@ export default function OrarioPage() {
 
             {generazioneInCorso && progresso && (
               <p className="mt-2 text-xs text-gray-500">
-                Ricerca in corso... {progresso.secondi}s / {impostazioni.durata_generazione_minuti * 60}s — {progresso.tentativi} tentativi
+                Ricerca in corso
+                {progresso.workerAttivi && progresso.workerAttivi > 1
+                  ? ` su ${progresso.workerAttivi} processi in parallelo`
+                  : ""}
+                ... {progresso.secondi}s / {impostazioni.durata_generazione_minuti * 60}s — {progresso.tentativi} tentativi
               </p>
             )}
 
