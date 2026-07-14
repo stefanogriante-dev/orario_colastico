@@ -158,6 +158,25 @@ export default function OrarioPage() {
     return mappa;
   }, [docenti]);
 
+  // Vincolo rigido: nel giorno in cui una classe ha Scienze motorie non può
+  // avere né Arte né Tecnologia (materie riconosciute per nome, stesso
+  // criterio già usato per l'eccezione "doppia classe" di Scienze motorie).
+  const materieMotoria = useMemo(() => {
+    return new Set(
+      materie.filter((m) => m.nome.toLowerCase().includes("motori")).map((m) => m.id)
+    );
+  }, [materie]);
+  const materieEscluseConMotoria = useMemo(() => {
+    return new Set(
+      materie
+        .filter((m) => {
+          const nome = m.nome.toLowerCase();
+          return nome.includes("arte") || nome.includes("tecnolog");
+        })
+        .map((m) => m.id)
+    );
+  }, [materie]);
+
   async function generaGrigliaOraria() {
     if (oreAlGiorno < 1) return;
     const righe: { giorno: number; ora: number }[] = [];
@@ -270,6 +289,8 @@ export default function OrarioPage() {
         })),
         preferenze,
         limiteOreGiornoPerTeacher,
+        materieMotoria,
+        materieEscluseConMotoria,
         scadenzaTotale: inizio + DURATA_GENERAZIONE_MS,
       },
       (p) => {
