@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   generaOrarioProgressivo,
+  calcolaViolazioni,
   type AssegnazioneInput,
   type ViolazionePreferenza,
 } from "@/lib/scheduler";
@@ -81,7 +82,6 @@ export default function OrarioPage() {
   const [esitoGenerazione, setEsitoGenerazione] = useState<
     { tipo: "successo" | "fallimento"; messaggio: string } | null
   >(null);
-  const [violazioniDettaglio, setViolazioniDettaglio] = useState<ViolazionePreferenza[]>([]);
 
   async function caricaTutto() {
     setLoading(true);
@@ -177,6 +177,19 @@ export default function OrarioPage() {
     );
   }, [materie]);
 
+  // Elenco delle preferenze non rispettate nell'orario ATTUALMENTE salvato
+  // (non solo appena generato): ricalcolato ogni volta che cambiano le ore
+  // o le preferenze, cosi' resta corretto anche dopo un ricaricamento della
+  // pagina o dopo modifiche manuali all'orario.
+  const violazioniDettaglio = useMemo<ViolazionePreferenza[]>(() => {
+    if (timeSlots.length === 0 || entrate.length === 0 || preferenze.length === 0) return [];
+    return calcolaViolazioni(
+      entrate.map((e) => ({ teacher_id: e.teacher_id, time_slot_id: e.time_slot_id })),
+      timeSlots,
+      preferenze
+    ).dettagli;
+  }, [entrate, timeSlots, preferenze]);
+
   async function generaGrigliaOraria() {
     if (oreAlGiorno < 1) return;
     const righe: { giorno: number; ora: number }[] = [];
@@ -271,7 +284,6 @@ export default function OrarioPage() {
   async function generaAutomaticamente() {
     setGenerazioneInCorso(true);
     setEsitoGenerazione(null);
-    setViolazioniDettaglio([]);
     setProgresso({ tentativi: 0, secondi: 0 });
 
     const entrateManualiComplete = entrate.filter((e) => e.manual);
@@ -326,7 +338,6 @@ export default function OrarioPage() {
             ? "Orario completato: tutte le preferenze valutabili sono state rispettate."
             : `Orario completato con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.`,
       });
-      setViolazioniDettaglio(risultato.dettagliViolazioni);
       caricaTutto();
     } else {
       setEsitoGenerazione({

@@ -928,6 +928,51 @@ function contaViolazioni(
   return { totale: violazioni, docenti: docentiViolati, dettagli };
 }
 
+// Ora minima per calcolare le violazioni di preferenza di un orario già
+// esistente (salvato in database), sia esso stato prodotto dalla
+// generazione automatica sia modificato/inserito a mano in seguito. Usata
+// dall'interfaccia per mostrare l'elenco delle violazioni sempre allineato
+// all'orario effettivamente salvato, anche dopo un ricaricamento della
+// pagina (a differenza del risultato di generaOrario, che vive solo in
+// memoria finché non si genera di nuovo).
+export interface EntrataValutabile {
+  teacher_id: number;
+  time_slot_id: number;
+}
+
+export function calcolaViolazioni(
+  entries: EntrataValutabile[],
+  timeSlots: TimeSlot[],
+  preferenze: Preferenza[]
+): { totale: number; docenti: Set<number>; dettagli: ViolazionePreferenza[] } {
+  const slotById = new Map(timeSlots.map((s) => [s.id, s]));
+  const slotsByDay = new Map<number, TimeSlot[]>();
+  for (const s of timeSlots) {
+    if (!slotsByDay.has(s.giorno)) slotsByDay.set(s.giorno, []);
+    slotsByDay.get(s.giorno)!.push(s);
+  }
+  for (const arr of slotsByDay.values()) arr.sort((x, y) => x.ora - y.ora);
+
+  const prefsByTeacher = new Map<number, Preferenza[]>();
+  for (const p of preferenze) {
+    if (!prefsByTeacher.has(p.teacher_id)) prefsByTeacher.set(p.teacher_id, []);
+    prefsByTeacher.get(p.teacher_id)!.push(p);
+  }
+
+  const unita: Unita[] = entries.map((e, i) => ({
+    unitaId: i,
+    assegnazioneId: -1,
+    teacherId: e.teacher_id,
+    classId: -1,
+    subjectId: -1,
+    modalita: "indifferente",
+  }));
+  const piano = new Map<number, number>();
+  entries.forEach((e, i) => piano.set(i, e.time_slot_id));
+
+  return contaViolazioni(unita, piano, slotById, prefsByTeacher, slotsByDay);
+}
+
 // ============================================================
 // Wrapper "a step": esegue generaOrario a piccoli blocchi di tempo,
 // lasciando respirare il browser tra un blocco e l'altro (utile per
