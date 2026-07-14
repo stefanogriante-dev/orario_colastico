@@ -59,42 +59,83 @@ export async function generaOrarioParallelo(
     onProgress({ tentativiTotali, tempoTrascorsoMs, migliorViolazioni, workerAttivi: numWorker });
   }
 
-  const risultati = await Promise.all(
-    progressoPerWorker.map((_, indice) =>
-      eseguiRicercaSuWorker(input, (progresso) => {
-        progressoPerWorker[indice] = progresso;
-        notificaProgresso();
-      })
-    )
-  );
+  return new Promise<GeneraOrarioOutput>((resolve) => {
+    const workers: Worker[] = [];
+    const risultatiParziali: GeneraOrarioOutput[] = [];
+    let concluso = false;
+    let workerTerminati = 0;
 
-  return scegliMigliore(risultati);
-}
+    // Non appena un worker trova una combinazione che riempie tutte le
+    // celle, fermiamo SUBITO l'intero processo di ricerca: terminiamo tutti
+    // gli altri worker invece di lasciarli girare fino al loro tempo
+    // massimo, e restituiamo direttamente questo risultato. Non ha senso
+    // continuare a cercare una combinazione con meno preferenze violate una
+    // volta che l'orario e' gia' completo.
+    function fermaTuttiERisolvi(risultato: GeneraOrarioOutput) {
+      if (concluso) return;
+      concluso = true;
+      for (const w of workers) w.terminate();
+      resolve(risultato);
+    }
 
-function eseguiRicercaSuWorker(
-  input: Omit<GeneraOrarioInput, "scadenza"> & { scadenzaTotale: number },
-  onProgress: (p: ProgressoGenerazione) => void
-): Promise<GeneraOrarioOutput> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./scheduler.worker.ts", import.meta.url), { type: "module" });
-
-    worker.onmessage = (e: MessageEvent<MessaggioWorker>) => {
-      const messaggio = e.data;
-      if (messaggio.tipo === "progresso") {
-        onProgress(messaggio.progresso);
-      } else if (messaggio.tipo === "risultato") {
-        worker.terminate();
-        resolve(messaggio.risultato);
+    // Un worker ha finito senza trovare una combinazione completa (tempo
+    // scaduto) oppure e' fallito con un errore: se e' l'ultimo rimasto,
+    // concludiamo con la migliore combinazione PARZIALE tra quelle raccolte
+    // (o un risultato vuoto se nessun worker ha prodotto nulla). Un singolo
+    // worker fallito non deve far fallire l'intera ricerca finche' altri
+    // worker sono ancora al lavoro.
+    function workerConclusoSenzaSuccesso() {
+      workerTerminati++;
+      if (workerTerminati === numWorker && !concluso) {
+        concluso = true;
+        resolve(
+          risultatiParziali.length > 0
+            ? scegliMigliore(risultatiParziali)
+            : {
+                riuscito: false,
+                entries: [],
+                preferenzeViolate: 0,
+                preferenzeValutabili: input.preferenze.length,
+                tentativi: 0,
+                docentiViolati: new Set(),
+                dettagliViolazioni: [],
+                oreAssegnate: 0,
+                oreTotali: 0,
+              }
+        );
       }
-    };
+    }
 
-    worker.onerror = (errore) => {
-      worker.terminate();
-      reject(errore);
-    };
+    for (let indice = 0; indice < numWorker; indice++) {
+      const worker = new Worker(new URL("./scheduler.worker.ts", import.meta.url), { type: "module" });
+      workers.push(worker);
 
-    const avvio: MessaggioAvvio = { tipo: "avvia", input };
-    worker.postMessage(avvio);
+      worker.onmessage = (e: MessageEvent<MessaggioWorker>) => {
+        if (concluso) return;
+        const messaggio = e.data;
+        if (messaggio.tipo === "progresso") {
+          progressoPerWorker[indice] = messaggio.progresso;
+          notificaProgresso();
+        } else if (messaggio.tipo === "risultato") {
+          worker.terminate();
+          if (messaggio.risultato.riuscito) {
+            fermaTuttiERisolvi(messaggio.risultato);
+            return;
+          }
+          risultatiParziali.push(messaggio.risultato);
+          workerConclusoSenzaSuccesso();
+        }
+      };
+
+      worker.onerror = () => {
+        if (concluso) return;
+        worker.terminate();
+        workerConclusoSenzaSuccesso();
+      };
+
+      const avvio: MessaggioAvvio = { tipo: "avvia", input };
+      worker.postMessage(avvio);
+    }
   });
 }
 
