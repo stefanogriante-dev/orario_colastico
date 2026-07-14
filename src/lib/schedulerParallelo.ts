@@ -61,16 +61,20 @@ export async function generaOrarioParallelo(
 
   return new Promise<GeneraOrarioOutput>((resolve) => {
     const workers: Worker[] = [];
-    const risultatiParziali: GeneraOrarioOutput[] = [];
+    const risultatiRaccolti: GeneraOrarioOutput[] = [];
     let concluso = false;
     let workerTerminati = 0;
 
-    // Non appena un worker trova una combinazione che riempie tutte le
-    // celle, fermiamo SUBITO l'intero processo di ricerca: terminiamo tutti
-    // gli altri worker invece di lasciarli girare fino al loro tempo
-    // massimo, e restituiamo direttamente questo risultato. Non ha senso
-    // continuare a cercare una combinazione con meno preferenze violate una
-    // volta che l'orario e' gia' completo.
+    // Non appena un worker trova un risultato PERFETTO (tutte le celle
+    // riempite e nessuna preferenza violata), fermiamo SUBITO l'intero
+    // processo di ricerca: terminiamo tutti gli altri worker invece di
+    // lasciarli girare fino al loro tempo massimo, e restituiamo
+    // direttamente questo risultato. Non si puo' fare meglio di cosi', ha
+    // senso interrompere tutto. Se invece un worker completa l'orario ma con
+    // ancora qualche preferenza violata, non fermiamo gli altri: quel
+    // risultato viene solo raccolto (vedi risultatiRaccolti), nella speranza
+    // che un altro worker (o lo stesso, se rilanciato) trovi di meglio entro
+    // il tempo a disposizione.
     function fermaTuttiERisolvi(risultato: GeneraOrarioOutput) {
       if (concluso) return;
       concluso = true;
@@ -78,19 +82,19 @@ export async function generaOrarioParallelo(
       resolve(risultato);
     }
 
-    // Un worker ha finito senza trovare una combinazione completa (tempo
-    // scaduto) oppure e' fallito con un errore: se e' l'ultimo rimasto,
-    // concludiamo con la migliore combinazione PARZIALE tra quelle raccolte
-    // (o un risultato vuoto se nessun worker ha prodotto nulla). Un singolo
-    // worker fallito non deve far fallire l'intera ricerca finche' altri
-    // worker sono ancora al lavoro.
-    function workerConclusoSenzaSuccesso() {
+    // Un worker ha esaurito il proprio tempo (con o senza un risultato
+    // completo ma non perfetto) oppure e' fallito con un errore: se e'
+    // l'ultimo rimasto, concludiamo scegliendo il migliore tra tutti i
+    // risultati raccolti finora (o un risultato vuoto se nessun worker ha
+    // prodotto nulla). Un singolo worker fallito non deve far fallire
+    // l'intera ricerca finche' altri worker sono ancora al lavoro.
+    function workerConclusoSenzaFermarsi() {
       workerTerminati++;
       if (workerTerminati === numWorker && !concluso) {
         concluso = true;
         resolve(
-          risultatiParziali.length > 0
-            ? scegliMigliore(risultatiParziali)
+          risultatiRaccolti.length > 0
+            ? scegliMigliore(risultatiRaccolti)
             : {
                 riuscito: false,
                 entries: [],
@@ -118,19 +122,19 @@ export async function generaOrarioParallelo(
           notificaProgresso();
         } else if (messaggio.tipo === "risultato") {
           worker.terminate();
-          if (messaggio.risultato.riuscito) {
+          if (messaggio.risultato.riuscito && messaggio.risultato.preferenzeViolate === 0) {
             fermaTuttiERisolvi(messaggio.risultato);
             return;
           }
-          risultatiParziali.push(messaggio.risultato);
-          workerConclusoSenzaSuccesso();
+          risultatiRaccolti.push(messaggio.risultato);
+          workerConclusoSenzaFermarsi();
         }
       };
 
       worker.onerror = () => {
         if (concluso) return;
         worker.terminate();
-        workerConclusoSenzaSuccesso();
+        workerConclusoSenzaFermarsi();
       };
 
       const avvio: MessaggioAvvio = { tipo: "avvia", input };

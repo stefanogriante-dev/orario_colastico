@@ -1216,13 +1216,6 @@ export async function generaOrarioProgressivo(
   const CHUNK_MS_MASSIMO = 5000;
   let chunkMs = CHUNK_MS_INIZIALE;
   let migliore: GeneraOrarioOutput | null = null;
-  // Booleano separato (invece di controllare solo la verita' di "migliore")
-  // per il break piu' sotto: usare "if (migliore) break" farebbe si' che
-  // TypeScript restringa il tipo di "migliore" a "null" a ogni nuovo giro
-  // del while (dato che si arriva li' solo quando non si e' interrotto il
-  // loop), producendo poi un falso errore di tipo "never" al confronto
-  // "risultato.preferenzeViolate < migliore.preferenzeViolate" piu' sopra.
-  let trovataCombinazioneCompleta = false;
   // Migliore combinazione PARZIALE (incompleta) vista in un qualsiasi
   // blocco, tenuta da parte nel caso in cui nessun blocco riesca mai a
   // completare l'intero orario entro il tempo totale disponibile: meglio
@@ -1243,19 +1236,16 @@ export async function generaOrarioProgressivo(
     tentativiTotali += risultato.tentativi;
 
     if (risultato.riuscito) {
-      // Prima combinazione COMPLETA trovata (tutte le ore assegnate): la
-      // teniamo e interrompiamo subito la ricerca (vedi break piu' sotto),
-      // invece di continuare a cercarne una con meno preferenze violate. Con
-      // la ricerca parallela (vedi schedulerParallelo.ts) e' piu' efficiente
-      // fermare TUTTO il processo di ricerca non appena uno qualsiasi dei
-      // worker riempie tutte le celle, piuttosto che lasciare che un blocco
-      // continui a raffinare le preferenze fino a esaurire il tempo a
-      // disposizione.
+      // Teniamo la combinazione completa con meno preferenze violate finora
+      // trovata: continuiamo a cercare (entro il tempo totale disponibile)
+      // finché non ne troviamo una perfetta (0 violazioni) o finisce il
+      // tempo. Con la ricerca parallela (vedi schedulerParallelo.ts) l'intero
+      // processo si ferma subito non appena UNO dei worker trova un
+      // risultato perfetto: vedi il commento li' per i dettagli.
       if (!migliore || risultato.preferenzeViolate < migliore.preferenzeViolate) {
         migliore = risultato;
         docentiPrioritari = risultato.docentiViolati.size > 0 ? risultato.docentiViolati : undefined;
       }
-      trovataCombinazioneCompleta = true;
     } else {
       // Il blocco e' scaduto senza trovare nessuna combinazione completa:
       // era troppo corto per questo orario, il prossimo sara' piu' lungo.
@@ -1276,10 +1266,7 @@ export async function generaOrarioProgressivo(
       migliorViolazioni: migliore ? migliore.preferenzeViolate : null,
     });
 
-    // Fermati al primo risultato COMPLETO (riempie tutte le celle): non
-    // continuiamo a cercarne uno con meno preferenze violate (vedi commento
-    // sopra).
-    if (trovataCombinazioneCompleta) break;
+    if (migliore && migliore.preferenzeViolate === 0) break;
 
     // lascia respirare l'interfaccia prima del prossimo blocco
     await new Promise((r) => setTimeout(r, 0));
