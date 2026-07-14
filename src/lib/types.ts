@@ -63,3 +63,17 @@ export interface ScheduleEntry {
   manual: boolean;
   permette_doppia_classe: boolean;
 }
+
+// Configurazione generale della scuola: giorni di lezione, quali vincoli
+// rigidi opzionali sono attivi per la generazione automatica e per quanti
+// minuti la ricerca prova a completare l'orario prima di fermarsi.
+export interface ConfigurazioneScuola {
+  giorni_settimana: number;
+  vincolo_max_ore_classe_giorno: boolean;
+  vincolo_adiacenza_materia: boolean;
+  vincolo_max_ore_giorno_docente: boolean;
+  limite_ore_giorno_normale: number;
+  limite_ore_giorno_eccezione: number;
+  vincolo_motoria_arte_tecnologia: boolean;
+  durata_generazione_minuti: number;
+}

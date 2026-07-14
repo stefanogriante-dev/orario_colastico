@@ -27,10 +27,27 @@ create type esito_generazione as enum ('successo', 'fallito_timeout', 'fallito_v
 
 -- ---------- CONFIGURAZIONE SCUOLA ----------
 
--- Riga singola di configurazione generale (giorni di lezione nella settimana)
+-- Riga singola di configurazione generale (giorni di lezione nella settimana
+-- e impostazioni della generazione automatica: quali vincoli rigidi
+-- opzionali sono attivi e per quanti minuti la ricerca prova a completare
+-- l'orario prima di fermarsi).
 create table school_config (
   id smallint primary key default 1 check (id = 1),
   giorni_settimana smallint not null default 6, -- es. lun-sab = 6
+
+  -- Vincoli rigidi opzionali (disattivabili): a differenza dei vincoli
+  -- strutturali (doppie prenotazioni, ore manuali fisse), sempre attivi e
+  -- non configurabili, questi possono essere disattivati da chi usa l'app.
+  vincolo_max_ore_classe_giorno boolean not null default true, -- max 2 ore/giorno stessa coppia docente-classe
+  vincolo_adiacenza_materia boolean not null default true, -- materia ripetuta nello stesso giorno deve essere adiacente
+  vincolo_max_ore_giorno_docente boolean not null default true, -- massimo ore/giorno per docente
+  limite_ore_giorno_normale smallint not null default 5, -- soglia normale (usata solo se il vincolo sopra è attivo)
+  limite_ore_giorno_eccezione smallint not null default 6, -- soglia eccezione, una sola giornata a settimana
+  vincolo_motoria_arte_tecnologia boolean not null default true, -- motoria esclude arte/tecnologia nello stesso giorno
+
+  -- Durata massima (in minuti) della ricerca automatica dell'orario.
+  durata_generazione_minuti smallint not null default 5,
+
   updated_at timestamptz not null default now()
 );
 

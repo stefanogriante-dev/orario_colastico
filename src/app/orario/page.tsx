@@ -9,7 +9,7 @@ import {
   type ViolazionePreferenza,
 } from "@/lib/scheduler";
 import { esportaOrarioPerClassi } from "@/lib/exportExcel";
-import type { Classe, Docente, Materia, Preferenza, TimeSlot } from "@/lib/types";
+import type { Classe, ConfigurazioneScuola, Docente, Materia, Preferenza, TimeSlot } from "@/lib/types";
 
 const GIORNI_TUTTI = [
   { valore: 1, label: "Lunedì" },
@@ -21,7 +21,19 @@ const GIORNI_TUTTI = [
   { valore: 7, label: "Domenica" },
 ];
 
-const DURATA_GENERAZIONE_MS = 300000;
+// Impostazioni di default della generazione: usate finché school_config non
+// è stato caricato, e come fallback per righe create prima della migrazione
+// che ha aggiunto queste colonne.
+const IMPOSTAZIONI_DEFAULT: ConfigurazioneScuola = {
+  giorni_settimana: 6,
+  vincolo_max_ore_classe_giorno: true,
+  vincolo_adiacenza_materia: true,
+  vincolo_max_ore_giorno_docente: true,
+  limite_ore_giorno_normale: 5,
+  limite_ore_giorno_eccezione: 6,
+  vincolo_motoria_arte_tecnologia: true,
+  durata_generazione_minuti: 5,
+};
 
 const TIPO_LABEL: Record<ViolazionePreferenza["tipo"], string> = {
   giorno_libero: "Giorno libero",
@@ -73,6 +85,12 @@ export default function OrarioPage() {
   const [loading, setLoading] = useState(true);
   const [errore, setErrore] = useState<string | null>(null);
 
+  // Impostazioni della generazione automatica: quali vincoli rigidi
+  // opzionali sono attivi e per quanti minuti la ricerca prova a
+  // completare l'orario. Caricate da school_config e salvate lì ad ogni
+  // modifica, così restano le stesse tra una sessione e l'altra.
+  const [impostazioni, setImpostazioni] = useState<ConfigurazioneScuola>(IMPOSTAZIONI_DEFAULT);
+
   const [cellaAperta, setCellaAperta] = useState<CellaAperta | null>(null);
   const [oreAlGiorno, setOreAlGiorno] = useState(5);
 
@@ -93,7 +111,13 @@ export default function OrarioPage() {
         .from("teacher_classes")
         .select("id, teacher_id, class_id, subject_id, ore_settimanali, modalita"),
       supabase.from("preferences").select("id, teacher_id, tipo, dettaglio, nota, stato"),
-      supabase.from("school_config").select("giorni_settimana").eq("id", 1).single(),
+      supabase
+        .from("school_config")
+        .select(
+          "giorni_settimana, vincolo_max_ore_classe_giorno, vincolo_adiacenza_materia, vincolo_max_ore_giorno_docente, limite_ore_giorno_normale, limite_ore_giorno_eccezione, vincolo_motoria_arte_tecnologia, durata_generazione_minuti"
+        )
+        .eq("id", 1)
+        .single(),
       supabase.from("time_slots").select("id, giorno, ora").order("giorno").order("ora"),
       supabase
         .from("schedule_entries")
@@ -108,11 +132,31 @@ export default function OrarioPage() {
       setMaterie((m.data as Materia[]) ?? []);
       setAssegnazioni((a.data as AssegnazioneInput[]) ?? []);
       setPreferenze((p.data as Preferenza[]) ?? []);
-      const giorniConfigurati = sc.data
-        ? (sc.data as { giorni_settimana: number }).giorni_settimana
-        : giorniSettimana;
-      if (sc.data) {
+      const configCaricata = sc.data as ConfigurazioneScuola | null;
+      const giorniConfigurati = configCaricata ? configCaricata.giorni_settimana : giorniSettimana;
+      if (configCaricata) {
         setGiorniSettimana(giorniConfigurati);
+        // Le colonne dei vincoli opzionali potrebbero non esistere ancora su
+        // un database non migrato: si ripiega sui default per ciascun campo
+        // singolarmente invece che sull'intera riga, così i giorni_settimana
+        // già configurati non vengono comunque persi.
+        setImpostazioni({
+          giorni_settimana: giorniConfigurati,
+          vincolo_max_ore_classe_giorno:
+            configCaricata.vincolo_max_ore_classe_giorno ?? IMPOSTAZIONI_DEFAULT.vincolo_max_ore_classe_giorno,
+          vincolo_adiacenza_materia:
+            configCaricata.vincolo_adiacenza_materia ?? IMPOSTAZIONI_DEFAULT.vincolo_adiacenza_materia,
+          vincolo_max_ore_giorno_docente:
+            configCaricata.vincolo_max_ore_giorno_docente ?? IMPOSTAZIONI_DEFAULT.vincolo_max_ore_giorno_docente,
+          limite_ore_giorno_normale:
+            configCaricata.limite_ore_giorno_normale ?? IMPOSTAZIONI_DEFAULT.limite_ore_giorno_normale,
+          limite_ore_giorno_eccezione:
+            configCaricata.limite_ore_giorno_eccezione ?? IMPOSTAZIONI_DEFAULT.limite_ore_giorno_eccezione,
+          vincolo_motoria_arte_tecnologia:
+            configCaricata.vincolo_motoria_arte_tecnologia ?? IMPOSTAZIONI_DEFAULT.vincolo_motoria_arte_tecnologia,
+          durata_generazione_minuti:
+            configCaricata.durata_generazione_minuti ?? IMPOSTAZIONI_DEFAULT.durata_generazione_minuti,
+        });
       }
       // Alcuni slot potrebbero essere duplicati (stesso giorno/ora) o oltre i
       // giorni configurati: teniamo solo uno slot "canonico" per ogni
@@ -208,6 +252,27 @@ export default function OrarioPage() {
     });
     return risultato;
   }, [entrate, timeSlots, docenteById]);
+
+  // Aggiorna una o più impostazioni della generazione (vincoli opzionali o
+  // durata) e le salva subito in school_config, così restano le stesse
+  // anche dopo un ricaricamento della pagina o in una sessione successiva.
+  async function aggiornaImpostazioni(patch: Partial<ConfigurazioneScuola>) {
+    const nuove = { ...impostazioni, ...patch };
+    setImpostazioni(nuove);
+    const { error } = await supabase
+      .from("school_config")
+      .update({
+        vincolo_max_ore_classe_giorno: nuove.vincolo_max_ore_classe_giorno,
+        vincolo_adiacenza_materia: nuove.vincolo_adiacenza_materia,
+        vincolo_max_ore_giorno_docente: nuove.vincolo_max_ore_giorno_docente,
+        limite_ore_giorno_normale: nuove.limite_ore_giorno_normale,
+        limite_ore_giorno_eccezione: nuove.limite_ore_giorno_eccezione,
+        vincolo_motoria_arte_tecnologia: nuove.vincolo_motoria_arte_tecnologia,
+        durata_generazione_minuti: nuove.durata_generazione_minuti,
+      })
+      .eq("id", 1);
+    if (error) setErrore(error.message);
+  }
 
   async function generaGrigliaOraria() {
     if (oreAlGiorno < 1) return;
@@ -307,6 +372,7 @@ export default function OrarioPage() {
 
     const entrateManualiComplete = entrate.filter((e) => e.manual);
     const inizio = Date.now();
+    const durataMs = impostazioni.durata_generazione_minuti * 60000;
 
     const risultato = await generaOrarioProgressivo(
       {
@@ -319,9 +385,20 @@ export default function OrarioPage() {
           time_slot_id: e.time_slot_id,
         })),
         preferenze,
-        materieMotoria,
-        materieEscluseConMotoria,
-        scadenzaTotale: inizio + DURATA_GENERAZIONE_MS,
+        // Il vincolo Motoria/Arte/Tecnologia si disattiva semplicemente non
+        // passando gli insiemi delle materie coinvolte.
+        materieMotoria: impostazioni.vincolo_motoria_arte_tecnologia ? materieMotoria : undefined,
+        materieEscluseConMotoria: impostazioni.vincolo_motoria_arte_tecnologia
+          ? materieEscluseConMotoria
+          : undefined,
+        vincoliOpzionali: {
+          maxOreClasseGiorno: impostazioni.vincolo_max_ore_classe_giorno,
+          adiacenzaMateriaRipetuta: impostazioni.vincolo_adiacenza_materia,
+          maxOreGiornoDocente: impostazioni.vincolo_max_ore_giorno_docente,
+          limiteOreGiornoNormale: impostazioni.limite_ore_giorno_normale,
+          limiteOreGiornoEccezione: impostazioni.limite_ore_giorno_eccezione,
+        },
+        scadenzaTotale: inizio + durataMs,
       },
       (p) => {
         setProgresso({
@@ -363,7 +440,7 @@ export default function OrarioPage() {
       } else {
         setEsitoGenerazione({
           tipo: "fallimento",
-          messaggio: `Non è stato possibile completare l'orario entro 5 minuti: assegnate ${risultato.oreAssegnate} ore su ${risultato.oreTotali}. È stata salvata la migliore combinazione parziale trovata (${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}, elencate qui sotto). Prova a rimuovere o allentare qualche vincolo e riprova.`,
+          messaggio: `Non è stato possibile completare l'orario entro ${impostazioni.durata_generazione_minuti} minuti: assegnate ${risultato.oreAssegnate} ore su ${risultato.oreTotali}. È stata salvata la migliore combinazione parziale trovata (${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}, elencate qui sotto). Prova a rimuovere o allentare qualche vincolo e riprova.`,
         });
       }
       caricaTutto();
@@ -371,7 +448,7 @@ export default function OrarioPage() {
       setEsitoGenerazione({
         tipo: "fallimento",
         messaggio:
-          "Non è stato possibile trovare nessuna combinazione valida entro 5 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
+          `Non è stato possibile trovare nessuna combinazione valida entro ${impostazioni.durata_generazione_minuti} minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.`,
       });
     }
 
@@ -457,9 +534,98 @@ export default function OrarioPage() {
               </div>
             </div>
 
+            <div className="mt-4 border-t border-gray-100 pt-4">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-gray-400">
+                Impostazioni generazione
+              </h3>
+              <div className="mt-2 flex flex-wrap items-start gap-x-6 gap-y-3">
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={impostazioni.vincolo_max_ore_classe_giorno}
+                    onChange={(e) =>
+                      aggiornaImpostazioni({ vincolo_max_ore_classe_giorno: e.target.checked })
+                    }
+                  />
+                  Massimo 2 ore al giorno per la stessa classe
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={impostazioni.vincolo_adiacenza_materia}
+                    onChange={(e) =>
+                      aggiornaImpostazioni({ vincolo_adiacenza_materia: e.target.checked })
+                    }
+                  />
+                  Materia ripetuta nello stesso giorno deve essere adiacente
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={impostazioni.vincolo_motoria_arte_tecnologia}
+                    onChange={(e) =>
+                      aggiornaImpostazioni({ vincolo_motoria_arte_tecnologia: e.target.checked })
+                    }
+                  />
+                  Motoria esclude Arte/Tecnologia nello stesso giorno
+                </label>
+                <div className="flex flex-col gap-1">
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={impostazioni.vincolo_max_ore_giorno_docente}
+                      onChange={(e) =>
+                        aggiornaImpostazioni({ vincolo_max_ore_giorno_docente: e.target.checked })
+                      }
+                    />
+                    Massimo ore al giorno per docente
+                  </label>
+                  {impostazioni.vincolo_max_ore_giorno_docente && (
+                    <div className="ml-6 flex items-center gap-2 text-xs text-gray-500">
+                      <span>normale</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={12}
+                        className="w-14 rounded border border-gray-300 px-1 py-0.5 text-xs"
+                        value={impostazioni.limite_ore_giorno_normale}
+                        onChange={(e) =>
+                          aggiornaImpostazioni({ limite_ore_giorno_normale: Number(e.target.value) })
+                        }
+                      />
+                      <span>eccezione (1 giorno/settimana)</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={12}
+                        className="w-14 rounded border border-gray-300 px-1 py-0.5 text-xs"
+                        value={impostazioni.limite_ore_giorno_eccezione}
+                        onChange={(e) =>
+                          aggiornaImpostazioni({ limite_ore_giorno_eccezione: Number(e.target.value) })
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  Durata massima ricerca (minuti)
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    className="w-16 rounded border border-gray-300 px-2 py-1 text-sm"
+                    value={impostazioni.durata_generazione_minuti}
+                    onChange={(e) =>
+                      aggiornaImpostazioni({ durata_generazione_minuti: Number(e.target.value) })
+                    }
+                  />
+                </label>
+              </div>
+            </div>
+
             {generazioneInCorso && progresso && (
               <p className="mt-2 text-xs text-gray-500">
-                Ricerca in corso... {progresso.secondi}s / 300s — {progresso.tentativi} tentativi
+                Ricerca in corso... {progresso.secondi}s / {impostazioni.durata_generazione_minuti * 60}s — {progresso.tentativi} tentativi
               </p>
             )}
 
