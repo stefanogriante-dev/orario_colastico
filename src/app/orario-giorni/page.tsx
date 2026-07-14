@@ -33,7 +33,6 @@ export default function OrarioGiorniPage() {
   const [giorniSettimana, setGiorniSettimana] = useState(6);
   const [loading, setLoading] = useState(true);
   const [errore, setErrore] = useState<string | null>(null);
-  const [giornoAttivo, setGiornoAttivo] = useState(1);
 
   async function caricaTutto() {
     setLoading(true);
@@ -90,13 +89,6 @@ export default function OrarioGiorniPage() {
     return ore.length > 0 ? Math.max(...ore) : 0;
   }, [timeSlots]);
 
-  useEffect(() => {
-    if (giorni.length > 0 && !giorni.some((g) => g.valore === giornoAttivo)) {
-      setGiornoAttivo(giorni[0].valore);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [giorniSettimana]);
-
   async function esporta() {
     try {
       await esportaOrarioPerGiorni(classi, {
@@ -118,8 +110,8 @@ export default function OrarioGiorniPage() {
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Orario per giorni</h1>
           <p className="mt-1 text-gray-600">
-            Stesso orario della pagina Orario, visualizzato un giorno alla
-            volta con tutte le classi affiancate.
+            Stesso orario della pagina Orario, con una tabella per ogni
+            giorno (tutte le classi affiancate) impilate nella stessa pagina.
           </p>
         </div>
         <button
@@ -136,83 +128,20 @@ export default function OrarioGiorniPage() {
       )}
 
       {!loading && classi.length > 0 && timeSlots.length > 0 && (
-        <>
-          <div className="flex flex-wrap gap-2 border-b border-gray-200 pb-2">
-            {giorni.map((g) => (
-              <button
-                key={g.valore}
-                onClick={() => setGiornoAttivo(g.valore)}
-                className={`rounded px-3 py-1.5 text-sm ${
-                  giornoAttivo === g.valore
-                    ? "bg-gray-900 text-white"
-                    : "border border-gray-300 text-gray-700 hover:bg-gray-50"
-                }`}
-              >
-                {g.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white p-4">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr>
-                  <th className="w-10 border-b border-gray-200 pb-2 text-left text-xs text-gray-400">
-                    Ora
-                  </th>
-                  {classi.map((c) => (
-                    <th
-                      key={c.id}
-                      className="border-b border-gray-200 pb-2 text-left text-xs text-gray-500"
-                    >
-                      {c.nome}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {Array.from({ length: oreMax }, (_, i) => i + 1).map((ora) => {
-                  const slot = timeSlots.find((s) => s.giorno === giornoAttivo && s.ora === ora);
-                  return (
-                    <tr key={ora}>
-                      <td className="py-1 pr-2 align-top text-xs text-gray-400">{ora}</td>
-                      {classi.map((classe) => {
-                        const entrata = slot
-                          ? entrate.find((e) => e.time_slot_id === slot.id && e.class_id === classe.id)
-                          : undefined;
-                        const docente = entrata ? docenteById.get(entrata.teacher_id) : undefined;
-                        const materia = entrata ? materiaById.get(entrata.subject_id) : undefined;
-                        return (
-                          <td key={classe.id} className="p-1 align-top">
-                            {entrata ? (
-                              <div
-                                className={`min-w-[6rem] rounded px-2 py-1 text-xs ${
-                                  entrata.manual
-                                    ? "border border-gray-400"
-                                    : "border border-dashed border-gray-400"
-                                }`}
-                                style={{ backgroundColor: docente?.colore ?? "#f3f4f6" }}
-                              >
-                                <div className="font-medium text-black">{materia?.nome ?? "—"}</div>
-                                <div className="text-black">
-                                  {docente ? `${docente.cognome} ${docente.nome}` : "—"}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="flex h-10 min-w-[6rem] items-center justify-center rounded border border-dashed border-gray-200 text-gray-300">
-                                —
-                              </div>
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
+        <div className="space-y-10">
+          {giorni.map((g) => (
+            <GrigliaGiorno
+              key={g.valore}
+              giorno={g}
+              classi={classi}
+              oreMax={oreMax}
+              timeSlots={timeSlots}
+              entrate={entrate}
+              docenteById={docenteById}
+              materiaById={materiaById}
+            />
+          ))}
+        </div>
       )}
 
       {!loading && (classi.length === 0 || timeSlots.length === 0) && (
@@ -223,6 +152,87 @@ export default function OrarioGiorniPage() {
       )}
 
       {loading && <p className="text-sm text-gray-400">Caricamento...</p>}
+    </div>
+  );
+}
+
+function GrigliaGiorno({
+  giorno,
+  classi,
+  oreMax,
+  timeSlots,
+  entrate,
+  docenteById,
+  materiaById,
+}: {
+  giorno: { valore: number; label: string };
+  classi: Classe[];
+  oreMax: number;
+  timeSlots: TimeSlot[];
+  entrate: EntrataOrario[];
+  docenteById: Map<number, Docente>;
+  materiaById: Map<number, Materia>;
+}) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white p-4">
+      <h2 className="mb-2 font-medium text-gray-900">{giorno.label}</h2>
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr>
+            <th className="w-10 border-b border-gray-200 pb-2 text-left text-xs text-gray-400">
+              Ora
+            </th>
+            {classi.map((c) => (
+              <th
+                key={c.id}
+                className="border-b border-gray-200 pb-2 text-left text-xs text-gray-500"
+              >
+                {c.nome}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: oreMax }, (_, i) => i + 1).map((ora) => {
+            const slot = timeSlots.find((s) => s.giorno === giorno.valore && s.ora === ora);
+            return (
+              <tr key={ora}>
+                <td className="py-1 pr-2 align-top text-xs text-gray-400">{ora}</td>
+                {classi.map((classe) => {
+                  const entrata = slot
+                    ? entrate.find((e) => e.time_slot_id === slot.id && e.class_id === classe.id)
+                    : undefined;
+                  const docente = entrata ? docenteById.get(entrata.teacher_id) : undefined;
+                  const materia = entrata ? materiaById.get(entrata.subject_id) : undefined;
+                  return (
+                    <td key={classe.id} className="p-1 align-top">
+                      {entrata ? (
+                        <div
+                          className={`min-w-[6rem] rounded px-2 py-1 text-xs ${
+                            entrata.manual
+                              ? "border border-gray-400"
+                              : "border border-dashed border-gray-400"
+                          }`}
+                          style={{ backgroundColor: docente?.colore ?? "#f3f4f6" }}
+                        >
+                          <div className="font-medium text-black">{materia?.nome ?? "—"}</div>
+                          <div className="text-black">
+                            {docente ? `${docente.cognome} ${docente.nome}` : "—"}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex h-10 min-w-[6rem] items-center justify-center rounded border border-dashed border-gray-200 text-gray-300">
+                          —
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

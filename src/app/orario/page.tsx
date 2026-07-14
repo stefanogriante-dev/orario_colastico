@@ -147,17 +147,6 @@ export default function OrarioPage() {
     return ore.length > 0 ? Math.max(...ore) : 0;
   }, [timeSlots]);
 
-  // Vincolo rigido: massimo 5 ore di lezione al giorno per docente (su tutte
-  // le classi), eccetto la prof.ssa De Pascalis che può arrivare a 6.
-  const limiteOreGiornoPerTeacher = useMemo(() => {
-    const mappa = new Map<number, number>();
-    for (const d of docenti) {
-      const eDePascalis = `${d.cognome} ${d.nome}`.toLowerCase().includes("de pascalis");
-      mappa.set(d.id, eDePascalis ? 6 : 5);
-    }
-    return mappa;
-  }, [docenti]);
-
   // Vincolo rigido: nel giorno in cui una classe ha Scienze motorie non può
   // avere né Arte né Tecnologia (materie riconosciute per nome, stesso
   // criterio già usato per l'eccezione "doppia classe" di Scienze motorie).
@@ -189,6 +178,36 @@ export default function OrarioPage() {
       preferenze
     ).dettagli;
   }, [entrate, timeSlots, preferenze]);
+
+  // Docenti che nell'orario ATTUALMENTE salvato hanno 6 ore di lezione in un
+  // giorno (il "giorno eccezione" concesso dal vincolo rigido: normalmente
+  // massimo 5 ore/giorno, con una sola giornata a 6 ore consentita).
+  const docentiSeiOre = useMemo(() => {
+    if (timeSlots.length === 0 || entrate.length === 0) return [];
+    const slotById = new Map(timeSlots.map((s) => [s.id, s]));
+    const oreGiornoPerTeacher = new Map<string, number>();
+    for (const e of entrate) {
+      const slot = slotById.get(e.time_slot_id);
+      if (!slot) continue;
+      const chiave = `${e.teacher_id}-${slot.giorno}`;
+      oreGiornoPerTeacher.set(chiave, (oreGiornoPerTeacher.get(chiave) ?? 0) + 1);
+    }
+    const risultato: { teacherId: number; giorno: number }[] = [];
+    for (const [chiave, ore] of oreGiornoPerTeacher.entries()) {
+      if (ore >= 6) {
+        const [teacherIdStr, giornoStr] = chiave.split("-");
+        risultato.push({ teacherId: Number(teacherIdStr), giorno: Number(giornoStr) });
+      }
+    }
+    risultato.sort((a, b) => {
+      const da = docenteById.get(a.teacherId);
+      const db = docenteById.get(b.teacherId);
+      const nomeA = da ? `${da.cognome} ${da.nome}` : "";
+      const nomeB = db ? `${db.cognome} ${db.nome}` : "";
+      return nomeA.localeCompare(nomeB) || a.giorno - b.giorno;
+    });
+    return risultato;
+  }, [entrate, timeSlots, docenteById]);
 
   async function generaGrigliaOraria() {
     if (oreAlGiorno < 1) return;
@@ -300,7 +319,6 @@ export default function OrarioPage() {
           time_slot_id: e.time_slot_id,
         })),
         preferenze,
-        limiteOreGiornoPerTeacher,
         materieMotoria,
         materieEscluseConMotoria,
         scadenzaTotale: inizio + DURATA_GENERAZIONE_MS,
@@ -471,6 +489,25 @@ export default function OrarioPage() {
                     <li key={i}>
                       {nomeDocente}: {TIPO_LABEL[v.tipo]}
                       {dettagli ? ` (${dettagli})` : ""}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {docentiSeiOre.length > 0 && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+              <h2 className="text-sm font-medium text-blue-800">
+                Docenti con 6 ore in un giorno ({docentiSeiOre.length})
+              </h2>
+              <ul className="mt-2 space-y-1 text-sm text-blue-700">
+                {docentiSeiOre.map((d, i) => {
+                  const docente = docenteById.get(d.teacherId);
+                  const nomeDocente = docente ? `${docente.cognome} ${docente.nome}` : "Docente sconosciuto";
+                  return (
+                    <li key={i}>
+                      {nomeDocente}: {giornoLabel(d.giorno)}
                     </li>
                   );
                 })}

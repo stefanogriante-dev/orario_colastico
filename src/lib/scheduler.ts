@@ -52,10 +52,6 @@ export interface GeneraOrarioInput {
   assegnazioni: AssegnazioneInput[];
   entrateManuali: EntrataFissa[];
   preferenze: Preferenza[];
-  // Vincolo rigido: numero massimo di ore di lezione al giorno per ciascun
-  // docente (somma su tutte le classi). Se un docente non compare nella
-  // mappa si usa il limite di default (5).
-  limiteOreGiornoPerTeacher?: Map<number, number>;
   // Docenti a cui dare priorita' nell'ordine di processamento delle classi
   // (tipicamente chi ha avuto preferenze violate nel tentativo precedente):
   // uso interno di generaOrarioProgressivo per "guidare" i tentativi
@@ -69,11 +65,15 @@ export interface GeneraOrarioInput {
   scadenza: number; // Date.now() + millisecondi disponibili
 }
 
-const LIMITE_ORE_GIORNO_DEFAULT = 5;
-
-function limiteOreGiorno(teacherId: number, limiti: Map<number, number> | undefined): number {
-  return limiti?.get(teacherId) ?? LIMITE_ORE_GIORNO_DEFAULT;
-}
+// Vincolo rigido sulle ore giornaliere di un docente (somma su tutte le
+// classi): normalmente al massimo 5 ore al giorno, ma ogni docente può
+// avere UNA sola giornata della settimana con 6 ore (mai più di una, e
+// mai più di 6 ore in nessun giorno). La giornata "da 6 ore" non è
+// prestabilita: è la prima che, nel corso del piazzamento, arriva a 6 ore;
+// da quel momento in poi nessun'altra giornata dello stesso docente può
+// superare le 5 ore.
+const LIMITE_ORE_GIORNO_NORMALE = 5;
+const LIMITE_ORE_GIORNO_ECCEZIONE = 6;
 
 // Descrive una singola violazione di preferenza nel risultato, per poterla
 // mostrare nell'interfaccia (docente, tipo di preferenza e giorno in cui
@@ -203,7 +203,6 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     assegnazioni,
     entrateManuali,
     preferenze,
-    limiteOreGiornoPerTeacher,
     docentiPrioritari,
     materieMotoria,
     materieEscluseConMotoria,
@@ -282,6 +281,17 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
   }
 
+  // Se le ore manuali portano già un docente a 6 ore in un giorno, quel
+  // giorno è la sua "giornata da 6 ore": la generazione automatica non
+  // potrà farne raggiungere 6 anche a un altro giorno per lo stesso docente.
+  const giornoSeiOrePerTeacherManuale = new Map<number, number>();
+  for (const [chiave, ore] of orePerTeacherGiornoManuale.entries()) {
+    if (ore.length >= LIMITE_ORE_GIORNO_ECCEZIONE) {
+      const [teacherIdStr, giornoStr] = chiave.split("-");
+      giornoSeiOrePerTeacherManuale.set(Number(teacherIdStr), Number(giornoStr));
+    }
+  }
+
   // Le unita' da piazzare, raggruppate per classe e poi in "compiti"
   // (singole ore o coppie atomiche). La generazione procede una classe
   // alla volta, bloccando le ore di una classe completata prima di
@@ -340,6 +350,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     let orePerTeacherClasseGiorno = new Map<string, number>(teacherClasseGiornoManuale);
     let motoriaPerClasseGiorno = new Map<string, number>(motoriaPerClasseGiornoManuale);
     let escluseConMotoriaPerClasseGiorno = new Map<string, number>(escluseConMotoriaPerClasseGiornoManuale);
+    let giornoSeiOrePerTeacher = new Map<number, number>(giornoSeiOrePerTeacherManuale);
 
     let tuttoCompletato = true;
 
@@ -363,6 +374,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
         const provaOrePerTeacherClasseGiorno = new Map<string, number>(orePerTeacherClasseGiorno);
         const provaMotoriaPerClasseGiorno = new Map<string, number>(motoriaPerClasseGiorno);
         const provaEscluseConMotoriaPerClasseGiorno = new Map<string, number>(escluseConMotoriaPerClasseGiorno);
+        const provaGiornoSeiOrePerTeacher = new Map<number, number>(giornoSeiOrePerTeacher);
 
         const compitiShuffle = ordinaCompitiConPriorita(compitiClasse, docentiPrioritari);
         let classeOk = true;
@@ -379,7 +391,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               provaOrePerTeacherGiorno,
               provaOrePerAssegnazioneGiorno,
               provaOrePerTeacherClasseGiorno,
-              limiteOreGiornoPerTeacher,
+              provaGiornoSeiOrePerTeacher,
               materieMotoria,
               materieEscluseConMotoria,
               provaMotoriaPerClasseGiorno,
@@ -401,7 +413,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               materieMotoria,
               materieEscluseConMotoria,
               provaMotoriaPerClasseGiorno,
-              provaEscluseConMotoriaPerClasseGiorno
+              provaEscluseConMotoriaPerClasseGiorno,
+              provaGiornoSeiOrePerTeacher
             );
           } else {
             const esito = piazzaCoppia(
@@ -413,7 +426,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               provaOrePerTeacherGiorno,
               provaOrePerTeacherClasseGiorno,
               provaOrePerAssegnazioneGiorno,
-              limiteOreGiornoPerTeacher,
+              provaGiornoSeiOrePerTeacher,
               materieMotoria,
               materieEscluseConMotoria,
               provaMotoriaPerClasseGiorno,
@@ -435,7 +448,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               materieMotoria,
               materieEscluseConMotoria,
               provaMotoriaPerClasseGiorno,
-              provaEscluseConMotoriaPerClasseGiorno
+              provaEscluseConMotoriaPerClasseGiorno,
+              provaGiornoSeiOrePerTeacher
             );
             registraPiazzamento(
               compito.unitaB,
@@ -449,7 +463,8 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
               materieMotoria,
               materieEscluseConMotoria,
               provaMotoriaPerClasseGiorno,
-              provaEscluseConMotoriaPerClasseGiorno
+              provaEscluseConMotoriaPerClasseGiorno,
+              provaGiornoSeiOrePerTeacher
             );
           }
         }
@@ -465,6 +480,7 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
           orePerTeacherClasseGiorno = provaOrePerTeacherClasseGiorno;
           motoriaPerClasseGiorno = provaMotoriaPerClasseGiorno;
           escluseConMotoriaPerClasseGiorno = provaEscluseConMotoriaPerClasseGiorno;
+          giornoSeiOrePerTeacher = provaGiornoSeiOrePerTeacher;
           classeCompletata = true;
           break;
         }
@@ -539,7 +555,8 @@ function registraPiazzamento(
   materieMotoria: Set<number> | undefined,
   materieEscluseConMotoria: Set<number> | undefined,
   motoriaPerClasseGiorno: Map<string, number>,
-  escluseConMotoriaPerClasseGiorno: Map<string, number>
+  escluseConMotoriaPerClasseGiorno: Map<string, number>,
+  giornoSeiOrePerTeacher?: Map<number, number>
 ) {
   teacherBusy.add(`${u.teacherId}-${slot.id}`);
   classBusy.add(slot.id);
@@ -548,6 +565,15 @@ function registraPiazzamento(
   const chiaveGiorno = `${u.teacherId}-${slot.giorno}`;
   if (!orePerTeacherGiorno.has(chiaveGiorno)) orePerTeacherGiorno.set(chiaveGiorno, []);
   orePerTeacherGiorno.get(chiaveGiorno)!.push(slot.ora);
+
+  // se questo piazzamento porta il docente a 6 ore in questo giorno, questa
+  // diventa (se non lo era gia') la sua unica "giornata da 6 ore" consentita
+  if (
+    giornoSeiOrePerTeacher &&
+    orePerTeacherGiorno.get(chiaveGiorno)!.length === LIMITE_ORE_GIORNO_ECCEZIONE
+  ) {
+    giornoSeiOrePerTeacher.set(u.teacherId, slot.giorno);
+  }
 
   const chiaveAssegnazioneGiorno = `${u.assegnazioneId}-${slot.giorno}`;
   if (!orePerAssegnazioneGiorno.has(chiaveAssegnazioneGiorno)) orePerAssegnazioneGiorno.set(chiaveAssegnazioneGiorno, []);
@@ -612,6 +638,26 @@ function passaVincoloMotoria(
   const isEsclusa = materieEscluseConMotoria.has(u.subjectId);
   if (isMotoria && (escluseConMotoriaPerClasseGiorno.get(chiave) ?? 0) > 0) return false;
   if (isEsclusa && (motoriaPerClasseGiorno.get(chiave) ?? 0) > 0) return false;
+  return true;
+}
+
+// Vincolo rigido: un docente non può mai superare le 6 ore in un giorno, e
+// può raggiungere le 6 ore (invece del normale massimo di 5) in AL MASSIMO
+// una giornata della settimana. "incremento" è quante ore aggiunge questo
+// piazzamento (1 per una singola, 2 per una coppia).
+function passaVincoloOreGiorno(
+  teacherId: number,
+  giorno: number,
+  incremento: number,
+  oreEsistenti: number,
+  giornoSeiOrePerTeacher: Map<number, number>
+): boolean {
+  const oreDopo = oreEsistenti + incremento;
+  if (oreDopo > LIMITE_ORE_GIORNO_ECCEZIONE) return false;
+  if (oreDopo > LIMITE_ORE_GIORNO_NORMALE) {
+    const giornoGiaUsato = giornoSeiOrePerTeacher.get(teacherId);
+    if (giornoGiaUsato !== undefined && giornoGiaUsato !== giorno) return false;
+  }
   return true;
 }
 
@@ -704,19 +750,24 @@ function piazzaSingola(
   orePerTeacherGiorno: Map<string, number[]>,
   orePerAssegnazioneGiorno: Map<string, number[]>,
   orePerTeacherClasseGiorno: Map<string, number>,
-  limiteOreGiornoPerTeacher: Map<number, number> | undefined,
+  giornoSeiOrePerTeacher: Map<number, number>,
   materieMotoria: Set<number> | undefined,
   materieEscluseConMotoria: Set<number> | undefined,
   motoriaPerClasseGiorno: Map<string, number>,
   escluseConMotoriaPerClasseGiorno: Map<string, number>
 ): TimeSlot | null {
-  const limiteGiorno = limiteOreGiorno(u.teacherId, limiteOreGiornoPerTeacher);
   const liberi = timeSlots.filter(
     (slot) =>
       !teacherBusy.has(`${u.teacherId}-${slot.id}`) &&
       !classBusy.has(slot.id) &&
       passaVincoliGenerici(u, slot, orePerTeacherClasseGiorno, orePerAssegnazioneGiorno) &&
-      (orePerTeacherGiorno.get(`${u.teacherId}-${slot.giorno}`) ?? []).length < limiteGiorno &&
+      passaVincoloOreGiorno(
+        u.teacherId,
+        slot.giorno,
+        1,
+        (orePerTeacherGiorno.get(`${u.teacherId}-${slot.giorno}`) ?? []).length,
+        giornoSeiOrePerTeacher
+      ) &&
       passaVincoloMotoria(
         u,
         slot,
@@ -772,7 +823,7 @@ function piazzaCoppia(
   orePerTeacherGiorno: Map<string, number[]>,
   orePerTeacherClasseGiorno: Map<string, number>,
   orePerAssegnazioneGiorno: Map<string, number[]>,
-  limiteOreGiornoPerTeacher: Map<number, number> | undefined,
+  giornoSeiOrePerTeacher: Map<number, number>,
   materieMotoria: Set<number> | undefined,
   materieEscluseConMotoria: Set<number> | undefined,
   motoriaPerClasseGiorno: Map<string, number>,
@@ -780,7 +831,6 @@ function piazzaCoppia(
 ): [TimeSlot, TimeSlot] | null {
   let migliorCoppia: [TimeSlot, TimeSlot] | null = null;
   let migliorePenalita = Infinity;
-  const limiteGiorno = limiteOreGiorno(u.teacherId, limiteOreGiornoPerTeacher);
 
   for (const oreGiorno of slotsByDay.values()) {
     for (let i = 0; i < oreGiorno.length - 1; i++) {
@@ -808,7 +858,16 @@ function piazzaCoppia(
       // tutte le classi) aggiungendo queste 2 ore
       const chiaveGiornoDocente = `${u.teacherId}-${slot1.giorno}`;
       const oreEsistentiGiornoDocente = orePerTeacherGiorno.get(chiaveGiornoDocente) ?? [];
-      if (oreEsistentiGiornoDocente.length + 2 > limiteGiorno) continue;
+      if (
+        !passaVincoloOreGiorno(
+          u.teacherId,
+          slot1.giorno,
+          2,
+          oreEsistentiGiornoDocente.length,
+          giornoSeiOrePerTeacher
+        )
+      )
+        continue;
 
       // vincolo motoria/arte/tecnologia: la coppia e' sempre nello stesso
       // giorno (slot1.giorno === slot2.giorno), basta un solo controllo
