@@ -669,7 +669,8 @@ function contaViolazioni(
 // ============================================================
 // Wrapper "a step": esegue generaOrario a piccoli blocchi di tempo,
 // lasciando respirare il browser tra un blocco e l'altro (utile per
-// non bloccare l'interfaccia durante una ricerca fino a 30 secondi)
+// non bloccare l'interfaccia durante una ricerca anche lunga, fino al
+// tempo massimo passato dal chiamante in scadenzaTotale)
 // e permettendo di riportare un progresso.
 // ============================================================
 

@@ -97,15 +97,19 @@ export default function OrarioGiorniPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [giorniSettimana]);
 
-  function esporta() {
-    esportaOrarioPerGiorni(classi, {
-      giorni,
-      oreMax,
-      timeSlots,
-      entrate,
-      docenteById,
-      materiaById,
-    });
+  async function esporta() {
+    try {
+      await esportaOrarioPerGiorni(classi, {
+        giorni,
+        oreMax,
+        timeSlots,
+        entrate,
+        docenteById,
+        materiaById,
+      });
+    } catch (e) {
+      setErrore(e instanceof Error ? e.message : "Errore durante l'esportazione in Excel.");
+    }
   }
 
   return (

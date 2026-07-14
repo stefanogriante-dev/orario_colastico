@@ -16,7 +16,7 @@ const GIORNI_TUTTI = [
   { valore: 7, label: "Domenica" },
 ];
 
-const DURATA_GENERAZIONE_MS = 30000;
+const DURATA_GENERAZIONE_MS = 120000;
 
 interface EntrataOrario {
   id: number;
@@ -215,15 +215,19 @@ export default function OrarioPage() {
     setOperazioneInCorso(false);
   }
 
-  function esporta() {
-    esportaOrarioPerClassi(classi, {
-      giorni,
-      oreMax,
-      timeSlots,
-      entrate,
-      docenteById,
-      materiaById,
-    });
+  async function esporta() {
+    try {
+      await esportaOrarioPerClassi(classi, {
+        giorni,
+        oreMax,
+        timeSlots,
+        entrate,
+        docenteById,
+        materiaById,
+      });
+    } catch (e) {
+      setErrore(e instanceof Error ? e.message : "Errore durante l'esportazione in Excel.");
+    }
   }
 
   async function generaAutomaticamente() {
@@ -286,7 +290,7 @@ export default function OrarioPage() {
       setEsitoGenerazione({
         tipo: "fallimento",
         messaggio:
-          "Non è stato possibile completare l'orario entro 30 secondi. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
+          "Non è stato possibile completare l'orario entro 2 minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.",
       });
     }
 
@@ -374,7 +378,7 @@ export default function OrarioPage() {
 
             {generazioneInCorso && progresso && (
               <p className="mt-2 text-xs text-gray-500">
-                Ricerca in corso... {progresso.secondi}s / 30s — {progresso.tentativi} tentativi
+                Ricerca in corso... {progresso.secondi}s / 120s — {progresso.tentativi} tentativi
               </p>
             )}
 
