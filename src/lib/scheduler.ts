@@ -770,17 +770,28 @@ export async function generaOrarioProgressivo(
   onProgress?: (p: ProgressoGenerazione) => void
 ): Promise<GeneraOrarioOutput> {
   const inizio = Date.now();
-  const CHUNK_MS = 200;
+  // La dimensione del blocco e' adattiva: con orari grandi (molte classi,
+  // molte ore) anche un solo tentativo completo puo' richiedere centinaia
+  // di millisecondi o piu', quindi un blocco troppo piccolo verrebbe quasi
+  // sempre interrotto a meta' senza mai completare un tentativo, sprecando
+  // il tempo a disposizione. Si parte piccoli (per non bloccare l'interfaccia
+  // troppo a lungo su orari piccoli/veloci) e si raddoppia ogni volta che un
+  // blocco si esaurisce senza trovare nessuna combinazione completa.
+  const CHUNK_MS_INIZIALE = 200;
+  const CHUNK_MS_MASSIMO = 5000;
+  let chunkMs = CHUNK_MS_INIZIALE;
   let migliore: GeneraOrarioOutput | null = null;
   let tentativiTotali = 0;
-  // Docenti a cui dare priorita' nel prossimo blocco: si aggiorna ad ogni
-  // blocco riuscito con i docenti che in QUEL tentativo avevano preferenze
-  // violate, cosi' la ricerca "insegue" attivamente il problema invece di
-  // ripartire ogni volta con un ordine delle classi completamente casuale.
+  // Docenti a cui dare priorita' nel prossimo blocco: si aggiorna solo
+  // quando si trova un nuovo MIGLIOR risultato (non ad ogni tentativo
+  // riuscito), cosi' la ricerca insegue in modo stabile i problemi della
+  // combinazione migliore trovata finora, invece di rincorrere rumore da
+  // tentativi che potrebbero essere peggiori di quello gia' trovato.
   let docentiPrioritari: Set<number> | undefined = input.docentiPrioritari;
 
   while (Date.now() < input.scadenzaTotale) {
-    const scadenzaChunk = Math.min(Date.now() + CHUNK_MS, input.scadenzaTotale);
+    const inizioBlocco = Date.now();
+    const scadenzaChunk = Math.min(inizioBlocco + chunkMs, input.scadenzaTotale);
     const risultato = generaOrario({ ...input, docentiPrioritari, scadenza: scadenzaChunk });
     tentativiTotali += risultato.tentativi;
 
@@ -790,8 +801,12 @@ export async function generaOrarioProgressivo(
       // finché non ne troviamo una perfetta (0 violazioni) o finisce il tempo.
       if (!migliore || risultato.preferenzeViolate < migliore.preferenzeViolate) {
         migliore = risultato;
+        docentiPrioritari = risultato.docentiViolati.size > 0 ? risultato.docentiViolati : undefined;
       }
-      docentiPrioritari = risultato.docentiViolati.size > 0 ? risultato.docentiViolati : undefined;
+    } else {
+      // Il blocco e' scaduto senza trovare nessuna combinazione completa:
+      // era troppo corto per questo orario, il prossimo sara' piu' lungo.
+      chunkMs = Math.min(chunkMs * 2, CHUNK_MS_MASSIMO);
     }
 
     onProgress?.({
