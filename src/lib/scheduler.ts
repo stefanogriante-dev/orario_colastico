@@ -236,12 +236,23 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     assegnazioni,
     entrateManuali,
     preferenze,
-    docentiPrioritari,
     materieMotoria,
     materieEscluseConMotoria,
     scadenza,
   } = input;
   const vincoli = input.vincoliOpzionali ?? DEFAULT_VINCOLI_OPZIONALI;
+
+  // Docenti a cui dare priorita' nel prossimo tentativo esterno: parte da
+  // quelli passati dal chiamante (tipicamente chi ha avuto preferenze
+  // violate nel miglior risultato trovato finora nei chunk precedenti), ma
+  // viene aggiornata ANCHE piu' sotto quando una classe non riesce a
+  // completarsi entro MAX_TENTATIVI_PER_CLASSE: in quel caso i docenti
+  // della classe che ha fatto fallire l'intero tentativo diventano la
+  // nuova priorita', cosi' il prossimo giro processa per primi proprio chi
+  // era coinvolto nel punto in cui la ricerca si e' bloccata, invece di
+  // continuare a mescolare l'ordine in modo completamente cieco rispetto a
+  // DOVE il tentativo precedente e' fallito.
+  let docentiPrioritari = input.docentiPrioritari;
 
   const slotById = new Map(timeSlots.map((s) => [s.id, s]));
   const slotsByDay = new Map<number, TimeSlot[]>();
@@ -580,7 +591,16 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
       if (!classeCompletata) {
         // Questa classe non si e' completata nonostante piu' combinazioni:
         // abbandoniamo l'intero tentativo e ripartiamo da capo (nuovo
-        // ordine delle classi, nuove combinazioni per tutte).
+        // ordine delle classi, nuove combinazioni per tutte). Prima di
+        // ripartire, segnaliamo pero' come prioritari per il prossimo giro
+        // i docenti coinvolti in QUESTA classe: e' li' che la ricerca si
+        // e' bloccata, quindi conviene dar loro la prima scelta sugli slot
+        // migliori nel prossimo tentativo invece di rischiare che restino
+        // di nuovo in fondo alla coda per puro caso.
+        const docentiClasseFallita = new Set(
+          assegnazioni.filter((a) => a.class_id === classId).map((a) => a.teacher_id)
+        );
+        if (docentiClasseFallita.size > 0) docentiPrioritari = docentiClasseFallita;
         tuttoCompletato = false;
         break;
       }
