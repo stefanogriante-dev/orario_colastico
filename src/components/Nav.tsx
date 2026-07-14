@@ -6,6 +6,7 @@ const links = [
   { href: "/docenti", label: "Docenti" },
   { href: "/preferenze", label: "Preferenze" },
   { href: "/orario", label: "Orario" },
+  { href: "/orario-giorni", label: "Orario per giorni" },
 ];
 
 export default function Nav() {

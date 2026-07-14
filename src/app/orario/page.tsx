@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { generaOrarioProgressivo, type AssegnazioneInput } from "@/lib/scheduler";
+import { esportaOrarioPerClassi } from "@/lib/exportExcel";
 import type { Classe, Docente, Materia, Preferenza, TimeSlot } from "@/lib/types";
 
 const GIORNI_TUTTI = [
@@ -203,6 +204,17 @@ export default function OrarioPage() {
     setOperazioneInCorso(false);
   }
 
+  function esporta() {
+    esportaOrarioPerClassi(classi, {
+      giorni,
+      oreMax,
+      timeSlots,
+      entrate,
+      docenteById,
+      materiaById,
+    });
+  }
+
   async function generaAutomaticamente() {
     setGenerazioneInCorso(true);
     setEsitoGenerazione(null);
@@ -338,6 +350,12 @@ export default function OrarioPage() {
                   className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
                 >
                   Svuota tutto l'orario
+                </button>
+                <button
+                  onClick={esporta}
+                  className="rounded border border-gray-300 px-3 py-1.5 text-sm text-gray-700"
+                >
+                  Esporta in Excel
                 </button>
               </div>
             </div>
