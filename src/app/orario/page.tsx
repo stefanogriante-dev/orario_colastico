@@ -128,6 +128,17 @@ export default function OrarioPage() {
     return ore.length > 0 ? Math.max(...ore) : 0;
   }, [timeSlots]);
 
+  // Vincolo rigido: massimo 5 ore di lezione al giorno per docente (su tutte
+  // le classi), eccetto la prof.ssa De Pascalis che può arrivare a 6.
+  const limiteOreGiornoPerTeacher = useMemo(() => {
+    const mappa = new Map<number, number>();
+    for (const d of docenti) {
+      const eDePascalis = `${d.cognome} ${d.nome}`.toLowerCase().includes("de pascalis");
+      mappa.set(d.id, eDePascalis ? 6 : 5);
+    }
+    return mappa;
+  }, [docenti]);
+
   async function generaGrigliaOraria() {
     if (oreAlGiorno < 1) return;
     const righe: { giorno: number; ora: number }[] = [];
@@ -234,6 +245,7 @@ export default function OrarioPage() {
           time_slot_id: e.time_slot_id,
         })),
         preferenze,
+        limiteOreGiornoPerTeacher,
         scadenzaTotale: inizio + DURATA_GENERAZIONE_MS,
       },
       (p) => {
