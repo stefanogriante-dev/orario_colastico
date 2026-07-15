@@ -454,7 +454,11 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = max_seconds
-    solver.parameters.num_search_workers = 8
+    # 2 thread di ricerca: coerente con le vCPU effettivamente disponibili
+    # su una funzione serverless Vercel (1 su piano Hobby, max 2 su
+    # Pro/Enterprise). Un valore piu' alto non darebbe piu' velocita' reale,
+    # solo overhead di thread in eccesso rispetto alle CPU fisiche.
+    solver.parameters.num_search_workers = 2
     stato = solver.Solve(model)
 
     stato_nome = solver.StatusName(stato)
