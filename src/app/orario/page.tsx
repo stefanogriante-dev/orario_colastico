@@ -683,7 +683,7 @@ export default function OrarioPage() {
             <p className="mt-1 text-xs text-gray-400">
               Massimo ore/giorno per docente: sempre attivo, non disattivabile.
               Ogni docente è limitato a 5 ore al giorno, tranne De Pascalis che
-              può averne 6 in massimo 2 giornate a settimana.
+              può averne 6 in massimo 2 giornate a settimana (mai di martedì).
             </p>
           </div>
 

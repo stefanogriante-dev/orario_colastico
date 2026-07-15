@@ -105,9 +105,17 @@ export const DEFAULT_VINCOLI_OPZIONALI: VincoliOpzionali = {
 // (src/app/orario/page.tsx) risolve quali docenti rientrano nell'eccezione
 // cercando per cognome "De Pascalis" tra i docenti caricati: e' una regola
 // di business specifica della scuola, non piu' configurabile dall'utente.
+// Il martedi' e' inoltre SEMPRE escluso dall'eccezione (vedi
+// GIORNO_ESCLUSO_ECCEZIONE): De Pascalis non puo' mai fare 6 ore di
+// martedi', anche se ha ancora giornate eccezione disponibili.
 export const LIMITE_ORE_GIORNO_NORMALE = 5;
 export const LIMITE_ORE_GIORNO_ECCEZIONE = 6;
 export const NUMERO_MASSIMO_GIORNI_ECCEZIONE = 2;
+// Giorno (vedi TimeSlot.giorno: 1=Lunedi', 2=Martedi', ...) su cui
+// l'eccezione ore/giorno non puo' MAI essere usata, indipendentemente da
+// quante giornate eccezione restano disponibili. Nella scuola attuale:
+// martedi'.
+export const GIORNO_ESCLUSO_ECCEZIONE = 2;
 
 // Descrive una singola violazione di preferenza nel risultato, per poterla
 // mostrare nell'interfaccia (docente, tipo di preferenza e giorno in cui
@@ -743,9 +751,13 @@ function registraPiazzamento(
 //     consecutive (mai "sparse") — quando se ne piazza una in un giorno,
 //     un'altra ora della stessa materia va nella casella immediatamente
 //     successiva dello stesso giorno, fino a un massimo di 2 ore
-//     consecutive. Vincolo STRUTTURALE (non disattivabile dall'interfaccia)
-//     ma si applica SOLO alle assegnazioni con modalita' "a coppie": per
-//     "separate" e "indifferente" non c'è nessun vincolo di adiacenza.
+//     consecutive. Vincolo STRUTTURALE (non disattivabile dall'interfaccia).
+// (3) se la modalita' e' "separate", vale la regola OPPOSTA: due ore della
+//     stessa assegnazione non possono MAI finire in slot adiacenti dello
+//     stesso giorno (possono comunque cadere nello stesso giorno, purché
+//     non attaccate: es. 1ª e 4ª ora vanno bene, 1ª e 2ª no). Vincolo
+//     STRUTTURALE, sempre attivo, non disattivabile dall'interfaccia. Per
+//     "indifferente" non c'è invece nessun vincolo di adiacenza.
 function passaVincoliGenerici(
   u: Unita,
   slot: TimeSlot,
@@ -766,6 +778,13 @@ function passaVincoliGenerici(
       const adiacente = oreEsistentiAG.some((o) => Math.abs(o - slot.ora) === 1);
       if (!adiacente) return false;
     }
+  }
+
+  if (u.modalita === "separate") {
+    const chiaveAG = `${u.assegnazioneId}-${slot.giorno}`;
+    const oreEsistentiAG = orePerAssegnazioneGiorno.get(chiaveAG) ?? [];
+    const adiacente = oreEsistentiAG.some((o) => Math.abs(o - slot.ora) === 1);
+    if (adiacente) return false;
   }
 
   return true;
@@ -801,8 +820,11 @@ function passaVincoloMotoria(
 // raggiungere LIMITE_ORE_GIORNO_ECCEZIONE ore in AL MASSIMO
 // NUMERO_MASSIMO_GIORNI_ECCEZIONE giornate della settimana (mai piu' di
 // quel numero di giornate, e mai oltre il limite eccezione in nessun
-// giorno). "incremento" e' quante ore aggiunge questo piazzamento (1 per
-// una singola, 2 per una coppia).
+// giorno), con l'eccezione ULTERIORE che il giorno GIORNO_ESCLUSO_ECCEZIONE
+// (martedi') non puo' MAI ospitare l'eccezione, anche se il docente ha
+// ancora giornate eccezione disponibili: quel giorno resta sempre limitato
+// a LIMITE_ORE_GIORNO_NORMALE. "incremento" e' quante ore aggiunge questo
+// piazzamento (1 per una singola, 2 per una coppia).
 function passaVincoloOreGiorno(
   teacherId: number,
   giorno: number,
@@ -811,7 +833,8 @@ function passaVincoloOreGiorno(
   giorniEccezionePerTeacher: Map<number, Set<number>>,
   docentiOreEccezione: Set<number> | undefined
 ): boolean {
-  const puoEccezione = docentiOreEccezione?.has(teacherId) ?? false;
+  const puoEccezione =
+    (docentiOreEccezione?.has(teacherId) ?? false) && giorno !== GIORNO_ESCLUSO_ECCEZIONE;
   const limiteMax = puoEccezione ? LIMITE_ORE_GIORNO_ECCEZIONE : LIMITE_ORE_GIORNO_NORMALE;
   const oreDopo = oreEsistenti + incremento;
   if (oreDopo > limiteMax) return false;
@@ -898,10 +921,12 @@ function penalitaPreferenzeSlot(
   return penalita;
 }
 
-// Piazza una singola ora. Per modalita' "separate" evita, quando possibile,
-// gli slot adiacenti a un'altra ora della stessa assegnazione nello stesso
-// giorno: prima prova solo slot non adiacenti, e se nessuno e' disponibile
-// ripiega su tutti gli slot liberi (meglio un'ora vicina che nessuna ora).
+// Piazza una singola ora. Per modalita' "separate" gli slot adiacenti a
+// un'altra ora della stessa assegnazione nello stesso giorno sono gia'
+// esclusi da "liberi" (vincolo rigido, vedi passaVincoliGenerici): qui in
+// piu' si preferisce, quando possibile, un giorno in cui questa materia non
+// ha ancora nessuna ora, per disperderle il piu' possibile invece di
+// accumularne piu' d'una (non adiacente) nello stesso giorno.
 function piazzaSingola(
   u: Unita,
   timeSlots: TimeSlot[],
@@ -960,11 +985,11 @@ function piazzaSingola(
   }
 
   if (u.modalita === "separate") {
-    // preferisci un giorno in cui questa materia non ha ancora ore, per
-    // disperdere le ore invece di accumularle nello stesso giorno: se per
-    // forza di cose deve finire nello stesso giorno di un'altra ora della
-    // stessa materia, non c'è nessun vincolo di adiacenza da rispettare
-    // (l'adiacenza obbligatoria vale solo per la modalita' "a coppie").
+    // preferisci (quando possibile) un giorno in cui questa materia non ha
+    // ancora ore: pura preferenza di dispersione, non un vincolo — gli slot
+    // adiacenti sono gia' esclusi a monte da "liberi" (vincolo rigido), qui
+    // si cerca solo di evitare, se si può, di usare lo stesso giorno due
+    // volte anche quando le ore non sarebbero comunque adiacenti.
     const chiaveAssegnazioneGiorno = (giorno: number) => `${u.assegnazioneId}-${giorno}`;
     const giorniLiberi = liberi.filter((slot) => {
       const oreEsistenti = orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno(slot.giorno)) ?? [];

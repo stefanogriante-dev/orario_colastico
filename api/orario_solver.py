@@ -52,10 +52,17 @@ PESO_ORA_NON_PIAZZATA = 100_000
 # per cognome in src/app/orario/page.tsx), che possono raggiungere
 # LIMITE_ORE_ECCEZIONE ore in al massimo NUMERO_MASSIMO_GIORNI_ECCEZIONE
 # giornate della settimana. Deve rimanere allineato a LIMITE_ORE_GIORNO_*
-# e NUMERO_MASSIMO_GIORNI_ECCEZIONE in src/lib/scheduler.ts.
+# e NUMERO_MASSIMO_GIORNI_ECCEZIONE in src/lib/scheduler.ts. Il martedi' e'
+# inoltre SEMPRE escluso dall'eccezione (vedi GIORNO_ESCLUSO_ECCEZIONE):
+# De Pascalis non puo' mai fare 6 ore di martedi', anche se ha ancora
+# giornate eccezione disponibili.
 LIMITE_ORE_NORMALE = 5
 LIMITE_ORE_ECCEZIONE = 6
 NUMERO_MASSIMO_GIORNI_ECCEZIONE = 2
+# Giorno (vedi time_slots.giorno: 1=Lunedi', 2=Martedi', ...) su cui
+# l'eccezione ore/giorno non puo' MAI essere usata. Deve rimanere allineato
+# a GIORNO_ESCLUSO_ECCEZIONE in src/lib/scheduler.ts.
+GIORNO_ESCLUSO_ECCEZIONE = 2
 
 
 def _giorni_da_dettaglio(dettaglio: dict | None) -> list[int]:
@@ -296,6 +303,23 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
         if giorni_singola_vars:
             model.Add(sum(giorni_singola_vars) <= 1)
 
+    # ---- Vincolo strutturale: modalita' "separate" -------------------
+    # Regola OPPOSTA a "coppie": due ore della stessa assegnazione non
+    # possono MAI finire in slot adiacenti dello stesso giorno (possono
+    # comunque cadere nello stesso giorno, purche' non attaccate: es. 1a e
+    # 4a ora vanno bene, 1a e 2a no). Sempre attivo, non disattivabile.
+    for a in assegnazioni:
+        if a["modalita"] != "separate":
+            continue
+        a_id = a["id"]
+        for giorno, slots_giorno in slots_by_day.items():
+            slot_in_giorno = [s for s in slots_giorno if (a_id, s["id"]) in x]
+            for i in range(len(slot_in_giorno)):
+                for j in range(i + 1, len(slot_in_giorno)):
+                    s1, s2 = slot_in_giorno[i], slot_in_giorno[j]
+                    if abs(s1["ora"] - s2["ora"]) == 1:
+                        model.Add(x[(a_id, s1["id"])] + x[(a_id, s2["id"])] <= 1)
+
     # ---- Vincolo opzionale: max 2 ore/giorno per la stessa coppia
     #      docente-classe --------------------------------------------
     if vincolo_max_ore_classe_giorno:
@@ -325,7 +349,11 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
     #      ore/giorno per ogni docente, con fino a
     #      NUMERO_MASSIMO_GIORNI_ECCEZIONE giornate "eccezione" a
     #      settimana (fino a LIMITE_ORE_ECCEZIONE ore) SOLO per i docenti
-    #      in docenti_ore_eccezione (De Pascalis) -----------------------
+    #      in docenti_ore_eccezione (De Pascalis), con l'eccezione ULTERIORE
+    #      che il giorno GIORNO_ESCLUSO_ECCEZIONE (martedi') non puo' MAI
+    #      ospitare l'eccezione, anche se restano giornate eccezione
+    #      disponibili: quel giorno resta sempre limitato a
+    #      LIMITE_ORE_NORMALE. --------------------------------------------
     docenti = {a["teacher_id"] for a in assegnazioni}
     for teacher_id in docenti:
         assegnazioni_docente = [a for a in assegnazioni if a["teacher_id"] == teacher_id]
@@ -345,8 +373,10 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
             ]
             somma_ore_giorno = sum(termini) + ore_manuali_giorno if termini else ore_manuali_giorno
 
-            if not puo_eccezione:
-                # Nessuna eccezione concessa: limite fisso tutti i giorni.
+            puo_eccezione_giorno = puo_eccezione and giorno != GIORNO_ESCLUSO_ECCEZIONE
+            if not puo_eccezione_giorno:
+                # Nessuna eccezione concessa (o giorno escluso, es. martedi'):
+                # limite fisso.
                 model.Add(somma_ore_giorno <= LIMITE_ORE_NORMALE)
                 continue
 
