@@ -8,6 +8,7 @@ import {
   type ViolazionePreferenza,
 } from "@/lib/scheduler";
 import { generaOrarioParallelo } from "@/lib/schedulerParallelo";
+import { generaOrarioCpSat } from "@/lib/schedulerCpSat";
 import { esportaOrarioPerClassi } from "@/lib/exportExcel";
 import type { Classe, ConfigurazioneScuola, Docente, Materia, Preferenza, TimeSlot } from "@/lib/types";
 
@@ -374,39 +375,92 @@ export default function OrarioPage() {
     const inizio = Date.now();
     const durataMs = impostazioni.durata_generazione_minuti * 60000;
 
-    const risultato = await generaOrarioParallelo(
-      {
-        timeSlots,
-        assegnazioni,
-        entrateManuali: entrateManualiComplete.map((e) => ({
-          teacher_id: e.teacher_id,
-          class_id: e.class_id,
-          subject_id: e.subject_id,
-          time_slot_id: e.time_slot_id,
-        })),
-        preferenze,
-        // Il vincolo Motoria/Arte/Tecnologia si disattiva semplicemente non
-        // passando gli insiemi delle materie coinvolte.
-        materieMotoria: impostazioni.vincolo_motoria_arte_tecnologia ? materieMotoria : undefined,
-        materieEscluseConMotoria: impostazioni.vincolo_motoria_arte_tecnologia
-          ? materieEscluseConMotoria
-          : undefined,
-        vincoliOpzionali: {
-          maxOreClasseGiorno: impostazioni.vincolo_max_ore_classe_giorno,
-          maxOreGiornoDocente: impostazioni.vincolo_max_ore_giorno_docente,
-          limiteOreGiornoNormale: impostazioni.limite_ore_giorno_normale,
-          limiteOreGiornoEccezione: impostazioni.limite_ore_giorno_eccezione,
-        },
-        scadenzaTotale: inizio + durataMs,
+    // Aggiorna i secondi trascorsi ogni secondo indipendentemente da quale
+    // motore sta girando: il motore CP-SAT (vedi sotto) non riporta un
+    // progresso incrementale come l'euristica (e' una singola chiamata che
+    // risponde solo a fine ricerca), quindi senza questo timer l'utente non
+    // vedrebbe alcun avanzamento durante l'attesa.
+    const timerSecondi = setInterval(() => {
+      setProgresso((precedente) => ({
+        tentativi: precedente?.tentativi ?? 0,
+        secondi: Math.round((Date.now() - inizio) / 1000),
+        workerAttivi: precedente?.workerAttivi,
+      }));
+    }, 1000);
+
+    const inputComune = {
+      timeSlots,
+      assegnazioni,
+      entrateManuali: entrateManualiComplete.map((e) => ({
+        teacher_id: e.teacher_id,
+        class_id: e.class_id,
+        subject_id: e.subject_id,
+        time_slot_id: e.time_slot_id,
+      })),
+      preferenze,
+      vincoliOpzionali: {
+        maxOreClasseGiorno: impostazioni.vincolo_max_ore_classe_giorno,
+        maxOreGiornoDocente: impostazioni.vincolo_max_ore_giorno_docente,
+        limiteOreGiornoNormale: impostazioni.limite_ore_giorno_normale,
+        limiteOreGiornoEccezione: impostazioni.limite_ore_giorno_eccezione,
       },
-      (p) => {
-        setProgresso({
-          tentativi: p.tentativiTotali,
-          secondi: Math.round(p.tempoTrascorsoMs / 1000),
-          workerAttivi: p.workerAttivi,
-        });
-      }
-    );
+    };
+
+    let risultato: {
+      riuscito: boolean;
+      entries: { teacher_id: number; class_id: number; subject_id: number; time_slot_id: number }[];
+      preferenzeViolate: number;
+      preferenzeValutabili: number;
+      oreAssegnate: number;
+      oreTotali: number;
+    };
+
+    try {
+      // Primo tentativo: motore CP-SAT (Google OR-Tools) sul server, che
+      // trova sempre la combinazione OTTIMA entro il tempo a disposizione
+      // invece di affidarsi a tentativi casuali come l'euristica.
+      risultato = await generaOrarioCpSat(
+        {
+          ...inputComune,
+          materieMotoria: impostazioni.vincolo_motoria_arte_tecnologia ? Array.from(materieMotoria) : [],
+          materieEscluseConMotoria: impostazioni.vincolo_motoria_arte_tecnologia
+            ? Array.from(materieEscluseConMotoria)
+            : [],
+        },
+        durataMs / 1000
+      );
+    } catch (erroreCpSat) {
+      // Il motore CP-SAT non e' disponibile (backend non distribuito,
+      // errore di rete, timeout) o ha risposto con un errore: ripieghiamo
+      // sulla ricerca euristica nel browser, cosi' la generazione funziona
+      // comunque anche senza il backend Python.
+      console.warn("Motore CP-SAT non disponibile, uso la ricerca euristica locale:", erroreCpSat);
+      risultato = await generaOrarioParallelo(
+        {
+          timeSlots,
+          assegnazioni,
+          entrateManuali: inputComune.entrateManuali,
+          preferenze,
+          // Il vincolo Motoria/Arte/Tecnologia si disattiva semplicemente non
+          // passando gli insiemi delle materie coinvolte.
+          materieMotoria: impostazioni.vincolo_motoria_arte_tecnologia ? materieMotoria : undefined,
+          materieEscluseConMotoria: impostazioni.vincolo_motoria_arte_tecnologia
+            ? materieEscluseConMotoria
+            : undefined,
+          vincoliOpzionali: inputComune.vincoliOpzionali,
+          scadenzaTotale: inizio + durataMs,
+        },
+        (p) => {
+          setProgresso({
+            tentativi: p.tentativiTotali,
+            secondi: Math.round(p.tempoTrascorsoMs / 1000),
+            workerAttivi: p.workerAttivi,
+          });
+        }
+      );
+    } finally {
+      clearInterval(timerSecondi);
+    }
 
     if (risultato.entries.length > 0) {
       // Salviamo il risultato anche quando la ricerca non e' riuscita a

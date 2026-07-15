@@ -1,0 +1,5 @@
+# Dipendenze della funzione serverless Python in api/genera-orario.py
+# (motore di generazione orario con Google OR-Tools CP-SAT).
+# Non riguarda l'app Next.js (TypeScript): quelle dipendenze restano in
+# package.json.
+ortools>=9.15,<10.0
