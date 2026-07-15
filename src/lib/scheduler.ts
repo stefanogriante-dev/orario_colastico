@@ -357,6 +357,17 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
   }
 
+  // Giorni in cui un docente ha GIA' esattamente 1 ora per via delle sole
+  // ore manuali fisse (nessuna ora generata coinvolta): situazione
+  // inevitabile, non imputabile alla generazione automatica, quindi va
+  // esclusa dal controllo finale "mai una sola ora isolata al giorno" più
+  // sotto (altrimenti ogni tentativo fallirebbe sempre per un dato che non
+  // può comunque essere cambiato).
+  const giorniOraSingolaManualeInevitabile = new Set<string>();
+  for (const [chiave, ore] of orePerTeacherGiornoManuale.entries()) {
+    if (ore.length === 1) giorniOraSingolaManualeInevitabile.add(chiave);
+  }
+
   // Le unita' da piazzare, raggruppate per classe e poi in "compiti"
   // (singole ore o coppie atomiche). La generazione procede una classe
   // alla volta, bloccando le ore di una classe completata prima di
@@ -623,23 +634,44 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
 
     if (tuttoCompletato) {
-      const {
-        totale: violazioni,
-        docenti: docentiViolati,
-        dettagli: dettagliViolazioni,
-      } = contaViolazioni(tutteLeUnitaTotali, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
-      const entries = costruisciEntries(tutteLeUnitaTotali, pianoGlobale);
-      return {
-        riuscito: true,
-        entries,
-        preferenzeViolate: violazioni,
-        preferenzeValutabili: preferenze.length,
-        tentativi,
-        docentiViolati,
-        dettagliViolazioni,
-        oreAssegnate: entries.length,
-        oreTotali,
-      };
+      // Vincolo hard-coded (sempre attivo): un docente, in un giorno in cui
+      // lavora, deve avere ALMENO 2 ore (anche su classi diverse), mai una
+      // singola ora isolata. Si valuta sul totale giornaliero del docente
+      // su TUTTE le sue classi combinate, quindi e' verificabile solo ORA
+      // che il tentativo ha completato tutte le classi (non incrementalmente
+      // durante il piazzamento, perche' un'ora che sembra isolata potrebbe
+      // diventare una coppia con un piazzamento successivo in un'altra
+      // classe). Se violato, scartiamo l'intero tentativo: il ciclo
+      // esterno ne ripartira' uno nuovo, con un ordine/combinazione diversi.
+      let haOraSingolaIsolata = false;
+      for (const [chiave, ore] of orePerTeacherGiorno.entries()) {
+        if (ore.length === 1 && !giorniOraSingolaManualeInevitabile.has(chiave)) {
+          haOraSingolaIsolata = true;
+          break;
+        }
+      }
+
+      if (!haOraSingolaIsolata) {
+        const {
+          totale: violazioni,
+          docenti: docentiViolati,
+          dettagli: dettagliViolazioni,
+        } = contaViolazioni(tutteLeUnitaTotali, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
+        const entries = costruisciEntries(tutteLeUnitaTotali, pianoGlobale);
+        return {
+          riuscito: true,
+          entries,
+          preferenzeViolate: violazioni,
+          preferenzeValutabili: preferenze.length,
+          tentativi,
+          docentiViolati,
+          dettagliViolazioni,
+          oreAssegnate: entries.length,
+          oreTotali,
+        };
+      }
+      // altrimenti: tentativo scartato per un'ora isolata, si riparte da
+      // capo nel prossimo giro del ciclo esterno (vedi while piu' sopra)
     }
   }
 
@@ -984,21 +1016,18 @@ function piazzaSingola(
     return migliore;
   }
 
-  if (u.modalita === "separate") {
-    // preferisci (quando possibile) un giorno in cui questa materia non ha
-    // ancora ore: pura preferenza di dispersione, non un vincolo — gli slot
-    // adiacenti sono gia' esclusi a monte da "liberi" (vincolo rigido), qui
-    // si cerca solo di evitare, se si può, di usare lo stesso giorno due
-    // volte anche quando le ore non sarebbero comunque adiacenti.
-    const chiaveAssegnazioneGiorno = (giorno: number) => `${u.assegnazioneId}-${giorno}`;
-    const giorniLiberi = liberi.filter((slot) => {
-      const oreEsistenti = orePerAssegnazioneGiorno.get(chiaveAssegnazioneGiorno(slot.giorno)) ?? [];
-      return oreEsistenti.length === 0;
-    });
-    if (giorniLiberi.length > 0) return migliorFra(giorniLiberi);
-    // nessun giorno libero per questa materia: ripiega sugli slot validi rimasti
-  }
-
+  // NOTA: per modalita' "separate" NON si preferisce piu' un giorno "nuovo"
+  // per questa materia (a differenza di versioni precedenti): quella
+  // preferenza spingeva a disperdere le ore su piu' giorni diversi, il che
+  // confligge direttamente con il vincolo rigido "mai una sola ora isolata
+  // al giorno per un docente" (vedi passaVincoloOreGiorno/il controllo
+  // finale in generaOrario) quando questa e' l'unica assegnazione del
+  // docente quel giorno: spingere verso giorni sempre nuovi produrrebbe
+  // sistematicamente ore isolate, che il controllo finale scarterebbe
+  // sempre, bloccando la ricerca. Si lascia quindi che il piazzamento scelga
+  // liberamente tra tutti gli slot non adiacenti (vincolo "separate" gia'
+  // applicato a monte in "liberi"), cosi' le ore della stessa materia
+  // possono benissimo finire nello stesso giorno (purche' non adiacenti).
   return migliorFra(liberi);
 }
 

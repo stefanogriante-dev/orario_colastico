@@ -373,6 +373,21 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
             ]
             somma_ore_giorno = sum(termini) + ore_manuali_giorno if termini else ore_manuali_giorno
 
+            # Vincolo hard-coded (sempre attivo, per ogni docente): in un
+            # giorno in cui lavora deve avere ALMENO 2 ore (anche su classi
+            # diverse), mai una singola ora isolata. Si applica al totale
+            # giornaliero del docente su tutte le sue classi, non per
+            # singola classe. Se non ci sono ore GENERABILI quel giorno
+            # (nessun termine variabile) e le sole ore manuali fisse sono
+            # gia' 1, e' una situazione inevitabile (non c'e' nulla che il
+            # motore possa piazzare per sistemarla): in quel caso non
+            # imponiamo il vincolo, altrimenti il modello diventerebbe
+            # irrisolvibile per un dato che non puo' essere cambiato.
+            if termini:
+                model.Add(somma_ore_giorno != 1)
+            # (else: se ore_manuali_giorno == 1 e non ci sono termini, e'
+            # inevitabile e viene lasciato passare senza vincolo)
+
             puo_eccezione_giorno = puo_eccezione and giorno != GIORNO_ESCLUSO_ECCEZIONE
             if not puo_eccezione_giorno:
                 # Nessuna eccezione concessa (o giorno escluso, es. martedi'):
