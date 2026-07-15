@@ -67,12 +67,14 @@ export interface ScheduleEntry {
 // Configurazione generale della scuola: giorni di lezione, quali vincoli
 // rigidi opzionali sono attivi per la generazione automatica e per quanti
 // minuti la ricerca prova a completare l'orario prima di fermarsi.
+//
+// Il vincolo sulle ore/giorno per docente (5 normali, eccezione a 6 solo
+// per "De Pascalis") NON e' piu' qui: e' hard-coded nel motore (vedi
+// LIMITE_ORE_GIORNO_NORMALE/ECCEZIONE e NUMERO_MASSIMO_GIORNI_ECCEZIONE in
+// src/lib/scheduler.ts), non piu' un'impostazione modificabile dall'utente.
 export interface ConfigurazioneScuola {
   giorni_settimana: number;
   vincolo_max_ore_classe_giorno: boolean;
-  vincolo_max_ore_giorno_docente: boolean;
-  limite_ore_giorno_normale: number;
-  limite_ore_giorno_eccezione: number;
   vincolo_motoria_arte_tecnologia: boolean;
   durata_generazione_minuti: number;
 }

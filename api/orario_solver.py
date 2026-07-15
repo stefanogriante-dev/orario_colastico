@@ -46,8 +46,16 @@ PESO_EVITA_BUCHI = 15
 # massimo possibile di ore prima di ottimizzare le preferenze.
 PESO_ORA_NON_PIAZZATA = 100_000
 
-DEFAULT_LIMITE_ORE_NORMALE = 5
-DEFAULT_LIMITE_ORE_ECCEZIONE = 6
+# Vincolo hard-coded (sempre attivo, non configurabile): nessun docente
+# puo' superare LIMITE_ORE_NORMALE ore in un giorno, tranne i docenti in
+# "docentiOreEccezione" (nella scuola attuale, solo "De Pascalis": risolta
+# per cognome in src/app/orario/page.tsx), che possono raggiungere
+# LIMITE_ORE_ECCEZIONE ore in al massimo NUMERO_MASSIMO_GIORNI_ECCEZIONE
+# giornate della settimana. Deve rimanere allineato a LIMITE_ORE_GIORNO_*
+# e NUMERO_MASSIMO_GIORNI_ECCEZIONE in src/lib/scheduler.ts.
+LIMITE_ORE_NORMALE = 5
+LIMITE_ORE_ECCEZIONE = 6
+NUMERO_MASSIMO_GIORNI_ECCEZIONE = 2
 
 
 def _giorni_da_dettaglio(dettaglio: dict | None) -> list[int]:
@@ -162,9 +170,11 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
     materie_escluse_con_motoria: set[int] = set(input_data.get("materieEscluseConMotoria") or [])
     vincoli = input_data.get("vincoliOpzionali") or {}
     vincolo_max_ore_classe_giorno: bool = vincoli.get("maxOreClasseGiorno", True)
-    vincolo_max_ore_giorno_docente: bool = vincoli.get("maxOreGiornoDocente", True)
-    limite_normale: int = vincoli.get("limiteOreGiornoNormale", DEFAULT_LIMITE_ORE_NORMALE)
-    limite_eccezione: int = vincoli.get("limiteOreGiornoEccezione", DEFAULT_LIMITE_ORE_ECCEZIONE)
+    # Vincolo hard-coded (sempre attivo): vedi commento su LIMITE_ORE_NORMALE
+    # piu' sopra. docenti_ore_eccezione arriva risolto per nome dal
+    # frontend (src/app/orario/page.tsx): nella scuola attuale contiene
+    # solo l'id della prof.ssa De Pascalis.
+    docenti_ore_eccezione: set[int] = set(input_data.get("docentiOreEccezione") or [])
 
     slot_by_id = {s["id"]: s for s in time_slots}
     slots_by_day: dict[int, list[dict]] = defaultdict(list)
@@ -249,18 +259,42 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
     # Se in un giorno vengono piazzate 2+ ore della stessa assegnazione
     # "a coppie", devono essere in slot adiacenti (mai piu' di 2, mai
     # sparse): si ottiene vietando ogni coppia di slot NON adiacenti
-    # dello stesso giorno per la stessa assegnazione.
+    # dello stesso giorno per la stessa assegnazione. Questo da solo pero'
+    # NON basta: impedisce solo che in UN giorno ci siano 2 ore sparse,
+    # ma non impedisce che il motore lasci PIU' giorni con una sola ora
+    # isolata (es. martedi' 1 ora, mercoledi' 2 ore in coppia, venerdi' 1
+    # ora: tutte "adiacenti" nel senso della regola sopra perche' in
+    # ciascun giorno non ce n'e' mai una seconda non adiacente, ma nel
+    # complesso 2 ore su 4 restano comunque isolate). Aggiungiamo quindi
+    # un secondo vincolo GLOBALE per assegnazione: nell'intera settimana,
+    # al massimo UN giorno puo' avere una singola ora isolata di questa
+    # materia; tutti gli altri giorni non vuoti devono avere esattamente
+    # le 2 ore accoppiate.
     for a in assegnazioni:
         if a["modalita"] != "coppie":
             continue
         a_id = a["id"]
+        giorni_singola_vars = []
         for giorno, slots_giorno in slots_by_day.items():
             slot_in_giorno = [s for s in slots_giorno if (a_id, s["id"]) in x]
+            if not slot_in_giorno:
+                continue
             for i in range(len(slot_in_giorno)):
                 for j in range(i + 1, len(slot_in_giorno)):
                     s1, s2 = slot_in_giorno[i], slot_in_giorno[j]
                     if abs(s1["ora"] - s2["ora"]) != 1:
                         model.Add(x[(a_id, s1["id"])] + x[(a_id, s2["id"])] <= 1)
+
+            # Con il vincolo sopra, in questo giorno la somma delle ore di
+            # questa assegnazione puo' valere solo 0, 1 (isolata) o 2
+            # (coppia adiacente): tracciamo quando vale esattamente 1.
+            ore_giorno_termini = [x[(a_id, s["id"])] for s in slot_in_giorno]
+            giorno_singola = model.NewBoolVar(f"coppiasingola_a{a_id}_g{giorno}")
+            model.Add(sum(ore_giorno_termini) == 1).OnlyEnforceIf(giorno_singola)
+            model.Add(sum(ore_giorno_termini) != 1).OnlyEnforceIf(giorno_singola.Not())
+            giorni_singola_vars.append(giorno_singola)
+        if giorni_singola_vars:
+            model.Add(sum(giorni_singola_vars) <= 1)
 
     # ---- Vincolo opzionale: max 2 ore/giorno per la stessa coppia
     #      docente-classe --------------------------------------------
@@ -287,34 +321,44 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
                 if termini:
                     model.Add(sum(termini) + ore_manuali_giorno <= 2)
 
-    # ---- Vincolo opzionale: max ore/giorno per docente, con UNA sola
-    #      giornata "eccezione" a settimana ----------------------------
-    if vincolo_max_ore_giorno_docente:
-        docenti = {a["teacher_id"] for a in assegnazioni}
-        for teacher_id in docenti:
-            assegnazioni_docente = [a for a in assegnazioni if a["teacher_id"] == teacher_id]
-            eccezione_giorno_vars = []
-            for giorno in slots_by_day:
-                ore_manuali_giorno = sum(
-                    1
-                    for e in manuali_entries
-                    if e["teacher_id"] == teacher_id and slot_by_id[e["time_slot_id"]]["giorno"] == giorno
-                )
-                termini = [
-                    x[(a["id"], s["id"])]
-                    for a in assegnazioni_docente
-                    for s in slots_by_day[giorno]
-                    if (a["id"], s["id"]) in x
-                ]
-                somma_ore_giorno = sum(termini) + ore_manuali_giorno if termini else ore_manuali_giorno
+    # ---- Vincolo hard-coded (sempre attivo): max LIMITE_ORE_NORMALE
+    #      ore/giorno per ogni docente, con fino a
+    #      NUMERO_MASSIMO_GIORNI_ECCEZIONE giornate "eccezione" a
+    #      settimana (fino a LIMITE_ORE_ECCEZIONE ore) SOLO per i docenti
+    #      in docenti_ore_eccezione (De Pascalis) -----------------------
+    docenti = {a["teacher_id"] for a in assegnazioni}
+    for teacher_id in docenti:
+        assegnazioni_docente = [a for a in assegnazioni if a["teacher_id"] == teacher_id]
+        puo_eccezione = teacher_id in docenti_ore_eccezione
+        eccezione_giorno_vars = []
+        for giorno in slots_by_day:
+            ore_manuali_giorno = sum(
+                1
+                for e in manuali_entries
+                if e["teacher_id"] == teacher_id and slot_by_id[e["time_slot_id"]]["giorno"] == giorno
+            )
+            termini = [
+                x[(a["id"], s["id"])]
+                for a in assegnazioni_docente
+                for s in slots_by_day[giorno]
+                if (a["id"], s["id"]) in x
+            ]
+            somma_ore_giorno = sum(termini) + ore_manuali_giorno if termini else ore_manuali_giorno
 
-                eccezione = model.NewBoolVar(f"eccezione_t{teacher_id}_g{giorno}")
-                model.Add(somma_ore_giorno <= limite_normale + (limite_eccezione - limite_normale) * eccezione)
-                if ore_manuali_giorno > limite_normale:
-                    model.Add(eccezione == 1)
-                eccezione_giorno_vars.append(eccezione)
-            if eccezione_giorno_vars:
-                model.Add(sum(eccezione_giorno_vars) <= 1)
+            if not puo_eccezione:
+                # Nessuna eccezione concessa: limite fisso tutti i giorni.
+                model.Add(somma_ore_giorno <= LIMITE_ORE_NORMALE)
+                continue
+
+            eccezione = model.NewBoolVar(f"eccezione_t{teacher_id}_g{giorno}")
+            model.Add(
+                somma_ore_giorno <= LIMITE_ORE_NORMALE + (LIMITE_ORE_ECCEZIONE - LIMITE_ORE_NORMALE) * eccezione
+            )
+            if ore_manuali_giorno > LIMITE_ORE_NORMALE:
+                model.Add(eccezione == 1)
+            eccezione_giorno_vars.append(eccezione)
+        if eccezione_giorno_vars:
+            model.Add(sum(eccezione_giorno_vars) <= NUMERO_MASSIMO_GIORNI_ECCEZIONE)
 
     # ---- Vincolo opzionale: Motoria esclude Arte/Tecnologia nello
     #      stesso giorno per la stessa classe -------------------------

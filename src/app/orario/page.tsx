@@ -28,9 +28,6 @@ const GIORNI_TUTTI = [
 const IMPOSTAZIONI_DEFAULT: ConfigurazioneScuola = {
   giorni_settimana: 6,
   vincolo_max_ore_classe_giorno: true,
-  vincolo_max_ore_giorno_docente: true,
-  limite_ore_giorno_normale: 5,
-  limite_ore_giorno_eccezione: 6,
   vincolo_motoria_arte_tecnologia: true,
   durata_generazione_minuti: 5,
 };
@@ -118,7 +115,7 @@ export default function OrarioPage() {
       supabase
         .from("school_config")
         .select(
-          "giorni_settimana, vincolo_max_ore_classe_giorno, vincolo_max_ore_giorno_docente, limite_ore_giorno_normale, limite_ore_giorno_eccezione, vincolo_motoria_arte_tecnologia, durata_generazione_minuti"
+          "giorni_settimana, vincolo_max_ore_classe_giorno, vincolo_motoria_arte_tecnologia, durata_generazione_minuti"
         )
         .eq("id", 1)
         .single(),
@@ -148,12 +145,6 @@ export default function OrarioPage() {
           giorni_settimana: giorniConfigurati,
           vincolo_max_ore_classe_giorno:
             configCaricata.vincolo_max_ore_classe_giorno ?? IMPOSTAZIONI_DEFAULT.vincolo_max_ore_classe_giorno,
-          vincolo_max_ore_giorno_docente:
-            configCaricata.vincolo_max_ore_giorno_docente ?? IMPOSTAZIONI_DEFAULT.vincolo_max_ore_giorno_docente,
-          limite_ore_giorno_normale:
-            configCaricata.limite_ore_giorno_normale ?? IMPOSTAZIONI_DEFAULT.limite_ore_giorno_normale,
-          limite_ore_giorno_eccezione:
-            configCaricata.limite_ore_giorno_eccezione ?? IMPOSTAZIONI_DEFAULT.limite_ore_giorno_eccezione,
           vincolo_motoria_arte_tecnologia:
             configCaricata.vincolo_motoria_arte_tecnologia ?? IMPOSTAZIONI_DEFAULT.vincolo_motoria_arte_tecnologia,
           durata_generazione_minuti:
@@ -212,6 +203,18 @@ export default function OrarioPage() {
     );
   }, [materie]);
 
+  // Vincolo hard-coded (non piu' configurabile dall'interfaccia): solo la
+  // prof.ssa De Pascalis puo' avere fino a NUMERO_MASSIMO_GIORNI_ECCEZIONE
+  // giornate a settimana con LIMITE_ORE_GIORNO_ECCEZIONE ore; tutti gli
+  // altri docenti sono sempre limitati a LIMITE_ORE_GIORNO_NORMALE ore al
+  // giorno (vedi src/lib/scheduler.ts). Identificata per cognome, come
+  // "Scienze motorie" per le materie qui sopra.
+  const docentiOreEccezione = useMemo(() => {
+    return new Set(
+      docenti.filter((d) => d.cognome.toLowerCase().includes("pascalis")).map((d) => d.id)
+    );
+  }, [docenti]);
+
   // Elenco delle preferenze non rispettate nell'orario ATTUALMENTE salvato
   // (non solo appena generato): ricalcolato ogni volta che cambiano le ore
   // o le preferenze, cosi' resta corretto anche dopo un ricaricamento della
@@ -265,9 +268,6 @@ export default function OrarioPage() {
       .from("school_config")
       .update({
         vincolo_max_ore_classe_giorno: nuove.vincolo_max_ore_classe_giorno,
-        vincolo_max_ore_giorno_docente: nuove.vincolo_max_ore_giorno_docente,
-        limite_ore_giorno_normale: nuove.limite_ore_giorno_normale,
-        limite_ore_giorno_eccezione: nuove.limite_ore_giorno_eccezione,
         vincolo_motoria_arte_tecnologia: nuove.vincolo_motoria_arte_tecnologia,
         durata_generazione_minuti: nuove.durata_generazione_minuti,
       })
@@ -400,10 +400,10 @@ export default function OrarioPage() {
       preferenze,
       vincoliOpzionali: {
         maxOreClasseGiorno: impostazioni.vincolo_max_ore_classe_giorno,
-        maxOreGiornoDocente: impostazioni.vincolo_max_ore_giorno_docente,
-        limiteOreGiornoNormale: impostazioni.limite_ore_giorno_normale,
-        limiteOreGiornoEccezione: impostazioni.limite_ore_giorno_eccezione,
       },
+      // Vincolo hard-coded, sempre attivo: vedi la definizione di
+      // docentiOreEccezione piu' sopra.
+      docentiOreEccezione,
     };
 
     let risultato: {
@@ -432,6 +432,7 @@ export default function OrarioPage() {
           materieEscluseConMotoria: impostazioni.vincolo_motoria_arte_tecnologia
             ? Array.from(materieEscluseConMotoria)
             : [],
+          docentiOreEccezione: Array.from(docentiOreEccezione),
         },
         durataMs / 1000
       );
@@ -455,6 +456,7 @@ export default function OrarioPage() {
             ? materieEscluseConMotoria
             : undefined,
           vincoliOpzionali: inputComune.vincoliOpzionali,
+          docentiOreEccezione,
           scadenzaTotale: inizio + durataMs,
         },
         (p) => {
@@ -635,44 +637,6 @@ export default function OrarioPage() {
                   />
                   Motoria esclude Arte/Tecnologia nello stesso giorno
                 </label>
-                <div className="flex flex-col gap-1">
-                  <label className="flex items-center gap-2 text-sm text-gray-700">
-                    <input
-                      type="checkbox"
-                      checked={impostazioni.vincolo_max_ore_giorno_docente}
-                      onChange={(e) =>
-                        aggiornaImpostazioni({ vincolo_max_ore_giorno_docente: e.target.checked })
-                      }
-                    />
-                    Massimo ore al giorno per docente
-                  </label>
-                  {impostazioni.vincolo_max_ore_giorno_docente && (
-                    <div className="ml-6 flex items-center gap-2 text-xs text-gray-500">
-                      <span>normale</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={12}
-                        className="w-14 rounded border border-gray-300 px-1 py-0.5 text-xs"
-                        value={impostazioni.limite_ore_giorno_normale}
-                        onChange={(e) =>
-                          aggiornaImpostazioni({ limite_ore_giorno_normale: Number(e.target.value) })
-                        }
-                      />
-                      <span>eccezione (1 giorno/settimana)</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={12}
-                        className="w-14 rounded border border-gray-300 px-1 py-0.5 text-xs"
-                        value={impostazioni.limite_ore_giorno_eccezione}
-                        onChange={(e) =>
-                          aggiornaImpostazioni({ limite_ore_giorno_eccezione: Number(e.target.value) })
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
                 <label className="flex items-center gap-2 text-sm text-gray-700">
                   Durata massima ricerca (minuti)
                   <input
@@ -715,6 +679,11 @@ export default function OrarioPage() {
               Le ore inserite a mano (bordo pieno) non vengono mai toccate dalla
               generazione automatica. Le ore generate automaticamente (bordo
               tratteggiato) vengono ricalcolate ad ogni nuova generazione.
+            </p>
+            <p className="mt-1 text-xs text-gray-400">
+              Massimo ore/giorno per docente: sempre attivo, non disattivabile.
+              Ogni docente è limitato a 5 ore al giorno, tranne De Pascalis che
+              può averne 6 in massimo 2 giornate a settimana.
             </p>
           </div>
 

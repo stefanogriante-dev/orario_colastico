@@ -25,6 +25,10 @@ export interface GeneraOrarioCpSatInput {
   materieMotoria?: number[];
   materieEscluseConMotoria?: number[];
   vincoliOpzionali?: VincoliOpzionali;
+  // Id dei docenti a cui e' concesso il vincolo hard-coded "ore/giorno
+  // eccezione" (vedi docentiOreEccezione in scheduler.ts): nella scuola
+  // attuale, solo "De Pascalis".
+  docentiOreEccezione?: number[];
 }
 
 export interface RisultatoCpSat {
@@ -52,6 +56,7 @@ export async function generaOrarioCpSat(
       materieMotoria: input.materieMotoria ?? [],
       materieEscluseConMotoria: input.materieEscluseConMotoria ?? [],
       vincoliOpzionali: input.vincoliOpzionali,
+      docentiOreEccezione: input.docentiOreEccezione ?? [],
       maxSecondiSolver,
     }),
   });
