@@ -11,7 +11,19 @@ src/lib/schedulerParallelo.ts.
 """
 
 import json
+import os
+import sys
 from http.server import BaseHTTPRequestHandler
+
+# Su Vercel questo file viene eseguito senza che la sua stessa cartella
+# (api/) sia automaticamente nel sys.path, quindi un semplice
+# "from orario_solver import ..." fallisce con
+# "ModuleNotFoundError: No module named 'orario_solver'" anche se il file
+# orario_solver.py e' proprio li' accanto. Aggiungendo esplicitamente la
+# cartella di QUESTO file al sys.path, l'import del modulo vicino funziona
+# indipendentemente da come Vercel imposta la working directory/il
+# resolver dei moduli.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from orario_solver import genera_orario
 
