@@ -24,13 +24,15 @@ from orario_solver import genera_orario
 # client-side (vedi generaOrarioParallelo in schedulerParallelo.ts) SENZA
 # che nessuno se ne accorga: e' esattamente il bug che teneva CP-SAT
 # limitato a ~30 secondi anche quando l'utente chiedeva una ricerca di
-# 10 minuti dall'interfaccia. Piano Vercel Pro: maxDuration fino a 800s
-# senza bisogno della configurazione beta "extended max duration" (che
-# arriverebbe a 1800s ma richiede impostazioni aggiuntive). Qui teniamo
-# un margine di sicurezza di 20s sotto agli 800s di vercel.json per il
-# tempo di parsing/risposta.
+# 10 minuti dall'interfaccia. Piano Vercel Hobby: maxDuration massimo
+# 300s (5 minuti), gia' al limite consentito senza upgrade di piano. Qui
+# teniamo un margine di sicurezza di 20s sotto ai 300s di vercel.json per
+# il tempo di parsing/risposta. Se in futuro si passa al piano Pro
+# (fino a 800s, o 1800s con la configurazione beta "extended max
+# duration"), questo valore e il maxDuration in vercel.json vanno
+# alzati insieme.
 MAX_SECONDI_SOLVER_DEFAULT = 8.0
-MAX_SECONDI_SOLVER_LIMITE = 780.0
+MAX_SECONDI_SOLVER_LIMITE = 280.0
 
 
 class handler(BaseHTTPRequestHandler):
