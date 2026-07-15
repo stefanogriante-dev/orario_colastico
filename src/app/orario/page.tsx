@@ -413,6 +413,13 @@ export default function OrarioPage() {
       preferenzeValutabili: number;
       oreAssegnate: number;
       oreTotali: number;
+      // Solo per il motore CP-SAT: "OPTIMAL" se il risolutore ha DIMOSTRATO
+      // matematicamente che nessuna combinazione fa meglio (nessun tempo di
+      // ricerca aggiuntivo cambierebbe il risultato), "FEASIBLE" se il tempo
+      // a disposizione e' scaduto prima di riuscire a dimostrarlo (una
+      // combinazione migliore potrebbe esistere). Assente per l'euristica di
+      // riserva, che non fornisce questa garanzia.
+      stato?: string;
     };
     // Quale motore ha effettivamente prodotto il risultato: mostrato
     // nel messaggio finale, cosi' e' sempre chiaro se si e' usato CP-SAT
@@ -508,12 +515,25 @@ export default function OrarioPage() {
       }
       setErrore(null);
       if (risultato.riuscito) {
+        // Se il motore CP-SAT ha dimostrato l'ottimalita' (stato "OPTIMAL"),
+        // lo segnaliamo esplicitamente: significa che nessuna combinazione
+        // fa rispettare piu' preferenze di queste, quindi cercare ancora
+        // (anche con piu' tempo) non cambierebbe il risultato. Se invece e'
+        // solo "FEASIBLE" (tempo scaduto prima di dimostrarlo), lo
+        // segnaliamo altrettanto: una combinazione migliore potrebbe
+        // esistere e provare con piu' tempo potrebbe aiutare.
+        const notaOttimalita =
+          risultato.stato === "OPTIMAL"
+            ? " Il risultato è provatamente il migliore possibile: nessuna ricerca più lunga potrebbe fare meglio, dati i vincoli rigidi attivi."
+            : risultato.stato === "FEASIBLE"
+              ? " Il tempo a disposizione è scaduto prima di dimostrare che questo sia il migliore possibile: una ricerca più lunga potrebbe (ma non è garantito) trovare una combinazione con meno preferenze violate."
+              : "";
         setEsitoGenerazione({
           tipo: "successo",
           messaggio:
             risultato.preferenzeViolate === 0
               ? `Orario completato (motore: ${motoreUsato}): tutte le preferenze valutabili sono state rispettate.`
-              : `Orario completato (motore: ${motoreUsato}) con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.`,
+              : `Orario completato (motore: ${motoreUsato}) con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.${notaOttimalita}`,
         });
       } else {
         setEsitoGenerazione({
