@@ -357,17 +357,6 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
   }
 
-  // Giorni in cui un docente ha GIA' esattamente 1 ora per via delle sole
-  // ore manuali fisse (nessuna ora generata coinvolta): situazione
-  // inevitabile, non imputabile alla generazione automatica, quindi va
-  // esclusa dal controllo finale "mai una sola ora isolata al giorno" più
-  // sotto (altrimenti ogni tentativo fallirebbe sempre per un dato che non
-  // può comunque essere cambiato).
-  const giorniOraSingolaManualeInevitabile = new Set<string>();
-  for (const [chiave, ore] of orePerTeacherGiornoManuale.entries()) {
-    if (ore.length === 1) giorniOraSingolaManualeInevitabile.add(chiave);
-  }
-
   // Le unita' da piazzare, raggruppate per classe e poi in "compiti"
   // (singole ore o coppie atomiche). La generazione procede una classe
   // alla volta, bloccando le ore di una classe completata prima di
@@ -634,44 +623,23 @@ export function generaOrario(input: GeneraOrarioInput): GeneraOrarioOutput {
     }
 
     if (tuttoCompletato) {
-      // Vincolo hard-coded (sempre attivo): un docente, in un giorno in cui
-      // lavora, deve avere ALMENO 2 ore (anche su classi diverse), mai una
-      // singola ora isolata. Si valuta sul totale giornaliero del docente
-      // su TUTTE le sue classi combinate, quindi e' verificabile solo ORA
-      // che il tentativo ha completato tutte le classi (non incrementalmente
-      // durante il piazzamento, perche' un'ora che sembra isolata potrebbe
-      // diventare una coppia con un piazzamento successivo in un'altra
-      // classe). Se violato, scartiamo l'intero tentativo: il ciclo
-      // esterno ne ripartira' uno nuovo, con un ordine/combinazione diversi.
-      let haOraSingolaIsolata = false;
-      for (const [chiave, ore] of orePerTeacherGiorno.entries()) {
-        if (ore.length === 1 && !giorniOraSingolaManualeInevitabile.has(chiave)) {
-          haOraSingolaIsolata = true;
-          break;
-        }
-      }
-
-      if (!haOraSingolaIsolata) {
-        const {
-          totale: violazioni,
-          docenti: docentiViolati,
-          dettagli: dettagliViolazioni,
-        } = contaViolazioni(tutteLeUnitaTotali, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
-        const entries = costruisciEntries(tutteLeUnitaTotali, pianoGlobale);
-        return {
-          riuscito: true,
-          entries,
-          preferenzeViolate: violazioni,
-          preferenzeValutabili: preferenze.length,
-          tentativi,
-          docentiViolati,
-          dettagliViolazioni,
-          oreAssegnate: entries.length,
-          oreTotali,
-        };
-      }
-      // altrimenti: tentativo scartato per un'ora isolata, si riparte da
-      // capo nel prossimo giro del ciclo esterno (vedi while piu' sopra)
+      const {
+        totale: violazioni,
+        docenti: docentiViolati,
+        dettagli: dettagliViolazioni,
+      } = contaViolazioni(tutteLeUnitaTotali, pianoGlobale, slotById, prefsByTeacher, slotsByDay);
+      const entries = costruisciEntries(tutteLeUnitaTotali, pianoGlobale);
+      return {
+        riuscito: true,
+        entries,
+        preferenzeViolate: violazioni,
+        preferenzeValutabili: preferenze.length,
+        tentativi,
+        docentiViolati,
+        dettagliViolazioni,
+        oreAssegnate: entries.length,
+        oreTotali,
+      };
     }
   }
 
@@ -784,12 +752,12 @@ function registraPiazzamento(
 //     un'altra ora della stessa materia va nella casella immediatamente
 //     successiva dello stesso giorno, fino a un massimo di 2 ore
 //     consecutive. Vincolo STRUTTURALE (non disattivabile dall'interfaccia).
-// (3) se la modalita' e' "separate", vale la regola OPPOSTA: due ore della
-//     stessa assegnazione non possono MAI finire in slot adiacenti dello
-//     stesso giorno (possono comunque cadere nello stesso giorno, purché
-//     non attaccate: es. 1ª e 4ª ora vanno bene, 1ª e 2ª no). Vincolo
-//     STRUTTURALE, sempre attivo, non disattivabile dall'interfaccia. Per
-//     "indifferente" non c'è invece nessun vincolo di adiacenza.
+// (3) se la modalita' e' "separate", vale la regola OPPOSTA: le ore della
+//     stessa assegnazione devono cadere in giorni DIVERSI — mai due ore
+//     della stessa materia/classe/docente nello stesso giorno, nemmeno se
+//     non adiacenti. Vincolo STRUTTURALE, sempre attivo, non disattivabile
+//     dall'interfaccia. Per "indifferente" non c'è invece nessun vincolo di
+//     questo tipo (può ripetersi anche più volte nello stesso giorno).
 function passaVincoliGenerici(
   u: Unita,
   slot: TimeSlot,
@@ -815,8 +783,7 @@ function passaVincoliGenerici(
   if (u.modalita === "separate") {
     const chiaveAG = `${u.assegnazioneId}-${slot.giorno}`;
     const oreEsistentiAG = orePerAssegnazioneGiorno.get(chiaveAG) ?? [];
-    const adiacente = oreEsistentiAG.some((o) => Math.abs(o - slot.ora) === 1);
-    if (adiacente) return false;
+    if (oreEsistentiAG.length > 0) return false;
   }
 
   return true;
@@ -953,12 +920,11 @@ function penalitaPreferenzeSlot(
   return penalita;
 }
 
-// Piazza una singola ora. Per modalita' "separate" gli slot adiacenti a
-// un'altra ora della stessa assegnazione nello stesso giorno sono gia'
-// esclusi da "liberi" (vincolo rigido, vedi passaVincoliGenerici): qui in
-// piu' si preferisce, quando possibile, un giorno in cui questa materia non
-// ha ancora nessuna ora, per disperderle il piu' possibile invece di
-// accumularne piu' d'una (non adiacente) nello stesso giorno.
+// Piazza una singola ora. Per modalita' "separate" gli slot del giorno in
+// cui questa assegnazione ha gia' un'altra ora sono gia' esclusi da
+// "liberi" (vincolo rigido, vedi passaVincoliGenerici: le ore della stessa
+// assegnazione devono cadere in giorni diversi), quindi qui non serve
+// nessuna preferenza aggiuntiva per la scelta del giorno.
 function piazzaSingola(
   u: Unita,
   timeSlots: TimeSlot[],
@@ -1016,18 +982,10 @@ function piazzaSingola(
     return migliore;
   }
 
-  // NOTA: per modalita' "separate" NON si preferisce piu' un giorno "nuovo"
-  // per questa materia (a differenza di versioni precedenti): quella
-  // preferenza spingeva a disperdere le ore su piu' giorni diversi, il che
-  // confligge direttamente con il vincolo rigido "mai una sola ora isolata
-  // al giorno per un docente" (vedi passaVincoloOreGiorno/il controllo
-  // finale in generaOrario) quando questa e' l'unica assegnazione del
-  // docente quel giorno: spingere verso giorni sempre nuovi produrrebbe
-  // sistematicamente ore isolate, che il controllo finale scarterebbe
-  // sempre, bloccando la ricerca. Si lascia quindi che il piazzamento scelga
-  // liberamente tra tutti gli slot non adiacenti (vincolo "separate" gia'
-  // applicato a monte in "liberi"), cosi' le ore della stessa materia
-  // possono benissimo finire nello stesso giorno (purche' non adiacenti).
+  // Nessuna preferenza aggiuntiva necessaria qui: per "coppie"/"separate" i
+  // vincoli rigidi sono gia' applicati a monte in "liberi" (adiacenza
+  // richiesta per "coppie", giorni diversi obbligatori per "separate"), fra
+  // gli slot rimasti si sceglie solo in base alle preferenze del docente.
   return migliorFra(liberi);
 }
 

@@ -304,21 +304,17 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
             model.Add(sum(giorni_singola_vars) <= 1)
 
     # ---- Vincolo strutturale: modalita' "separate" -------------------
-    # Regola OPPOSTA a "coppie": due ore della stessa assegnazione non
-    # possono MAI finire in slot adiacenti dello stesso giorno (possono
-    # comunque cadere nello stesso giorno, purche' non attaccate: es. 1a e
-    # 4a ora vanno bene, 1a e 2a no). Sempre attivo, non disattivabile.
+    # Le ore della stessa assegnazione devono cadere in giorni DIVERSI: mai
+    # due ore della stessa materia/classe/docente nello stesso giorno,
+    # nemmeno se non adiacenti. Sempre attivo, non disattivabile.
     for a in assegnazioni:
         if a["modalita"] != "separate":
             continue
         a_id = a["id"]
         for giorno, slots_giorno in slots_by_day.items():
             slot_in_giorno = [s for s in slots_giorno if (a_id, s["id"]) in x]
-            for i in range(len(slot_in_giorno)):
-                for j in range(i + 1, len(slot_in_giorno)):
-                    s1, s2 = slot_in_giorno[i], slot_in_giorno[j]
-                    if abs(s1["ora"] - s2["ora"]) == 1:
-                        model.Add(x[(a_id, s1["id"])] + x[(a_id, s2["id"])] <= 1)
+            if len(slot_in_giorno) > 1:
+                model.Add(sum(x[(a_id, s["id"])] for s in slot_in_giorno) <= 1)
 
     # ---- Vincolo opzionale: max 2 ore/giorno per la stessa coppia
     #      docente-classe --------------------------------------------
@@ -372,21 +368,6 @@ def genera_orario(input_data: dict[str, Any], max_seconds: float = 8.0) -> dict[
                 if (a["id"], s["id"]) in x
             ]
             somma_ore_giorno = sum(termini) + ore_manuali_giorno if termini else ore_manuali_giorno
-
-            # Vincolo hard-coded (sempre attivo, per ogni docente): in un
-            # giorno in cui lavora deve avere ALMENO 2 ore (anche su classi
-            # diverse), mai una singola ora isolata. Si applica al totale
-            # giornaliero del docente su tutte le sue classi, non per
-            # singola classe. Se non ci sono ore GENERABILI quel giorno
-            # (nessun termine variabile) e le sole ore manuali fisse sono
-            # gia' 1, e' una situazione inevitabile (non c'e' nulla che il
-            # motore possa piazzare per sistemarla): in quel caso non
-            # imponiamo il vincolo, altrimenti il modello diventerebbe
-            # irrisolvibile per un dato che non puo' essere cambiato.
-            if termini:
-                model.Add(somma_ore_giorno != 1)
-            # (else: se ore_manuali_giorno == 1 e non ci sono termini, e'
-            # inevitabile e viene lasciato passare senza vincolo)
 
             puo_eccezione_giorno = puo_eccezione and giorno != GIORNO_ESCLUSO_ECCEZIONE
             if not puo_eccezione_giorno:
