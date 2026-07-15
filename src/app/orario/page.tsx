@@ -414,6 +414,12 @@ export default function OrarioPage() {
       oreAssegnate: number;
       oreTotali: number;
     };
+    // Quale motore ha effettivamente prodotto il risultato: mostrato
+    // nel messaggio finale, cosi' e' sempre chiaro se si e' usato CP-SAT
+    // o si e' ripiegato sull'euristica (il fallback prima avveniva in
+    // modo completamente silenzioso, rendendo difficile capire perche'
+    // una ricerca "andasse male" nonostante il motore piu' potente).
+    let motoreUsato: "CP-SAT" | "euristica di riserva" = "CP-SAT";
 
     try {
       // Primo tentativo: motore CP-SAT (Google OR-Tools) sul server, che
@@ -435,6 +441,7 @@ export default function OrarioPage() {
       // sulla ricerca euristica nel browser, cosi' la generazione funziona
       // comunque anche senza il backend Python.
       console.warn("Motore CP-SAT non disponibile, uso la ricerca euristica locale:", erroreCpSat);
+      motoreUsato = "euristica di riserva";
       risultato = await generaOrarioParallelo(
         {
           timeSlots,
@@ -462,6 +469,21 @@ export default function OrarioPage() {
       clearInterval(timerSecondi);
     }
 
+    // Tempo REALMENTE trascorso (non quello impostato in
+    // impostazioni.durata_generazione_minuti): il motore CP-SAT sul
+    // server ha un tetto massimo indipendente (vedi
+    // MAX_SECONDI_SOLVER_LIMITE in api/genera-orario.py, legato al
+    // "maxDuration" del piano Vercel) che puo' essere piu' basso del
+    // tempo richiesto qui, quindi la ricerca puo' fermarsi prima. Usare
+    // il tempo configurato nel messaggio sarebbe fuorviante: sembrerebbe
+    // che la ricerca abbia usato tutto il tempo a disposizione quando
+    // magari si e' fermata molto prima.
+    const minutiTrascorsi = (Date.now() - inizio) / 60000;
+    const minutiTrascorsiTesto =
+      minutiTrascorsi < 1
+        ? `${Math.max(1, Math.round(minutiTrascorsi * 60))} secondi`
+        : `${minutiTrascorsi.toFixed(1).replace(/\.0$/, "")} minuti`;
+
     if (risultato.entries.length > 0) {
       // Salviamo il risultato anche quando la ricerca non e' riuscita a
       // completare TUTTE le ore entro il tempo massimo: in quel caso
@@ -488,13 +510,13 @@ export default function OrarioPage() {
           tipo: "successo",
           messaggio:
             risultato.preferenzeViolate === 0
-              ? "Orario completato: tutte le preferenze valutabili sono state rispettate."
-              : `Orario completato con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.`,
+              ? `Orario completato (motore: ${motoreUsato}): tutte le preferenze valutabili sono state rispettate.`
+              : `Orario completato (motore: ${motoreUsato}) con ${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}.`,
         });
       } else {
         setEsitoGenerazione({
           tipo: "fallimento",
-          messaggio: `Non è stato possibile completare l'orario entro ${impostazioni.durata_generazione_minuti} minuti: assegnate ${risultato.oreAssegnate} ore su ${risultato.oreTotali}. È stata salvata la migliore combinazione parziale trovata (${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}, elencate qui sotto). Prova a rimuovere o allentare qualche vincolo e riprova.`,
+          messaggio: `Non è stato possibile completare l'orario in ${minutiTrascorsiTesto} (motore: ${motoreUsato}): assegnate ${risultato.oreAssegnate} ore su ${risultato.oreTotali}. È stata salvata la migliore combinazione parziale trovata (${risultato.preferenzeViolate} preferenza/e non rispettate su ${risultato.preferenzeValutabili}, elencate qui sotto). Prova a rimuovere o allentare qualche vincolo e riprova.`,
         });
       }
       caricaTutto();
@@ -502,7 +524,7 @@ export default function OrarioPage() {
       setEsitoGenerazione({
         tipo: "fallimento",
         messaggio:
-          `Non è stato possibile trovare nessuna combinazione valida entro ${impostazioni.durata_generazione_minuti} minuti. Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.`,
+          `Non è stato possibile trovare nessuna combinazione valida in ${minutiTrascorsiTesto} (motore: ${motoreUsato}). Prova a rimuovere o allentare qualche vincolo (preferenza di un docente) e riprova.`,
       });
     }
 

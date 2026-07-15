@@ -15,14 +15,22 @@ from http.server import BaseHTTPRequestHandler
 
 from orario_solver import genera_orario
 
-# Tempo massimo che il solver puo' usare, in secondi: tenuto
-# volutamente sotto il timeout di default delle funzioni Vercel (10s sul
-# piano gratuito) per lasciare margine di sicurezza. Se il piano Vercel
-# permette timeout piu' lunghi (Pro/Enterprise, o "maxDuration" alzato in
-# vercel.json), questo valore puo' essere aumentato per orari grandi o
-# molto vincolati.
+# Tempo massimo che il solver puo' usare, in secondi.
+#
+# ATTENZIONE: questo valore deve restare SOTTO il "maxDuration" impostato in
+# vercel.json per api/genera-orario.py, altrimenti Vercel termina la
+# funzione (e quindi il solver) prima che riesca a rispondere, il frontend
+# vede un errore/timeout e ripiega silenziosamente sull'euristica
+# client-side (vedi generaOrarioParallelo in schedulerParallelo.ts) SENZA
+# che nessuno se ne accorga: e' esattamente il bug che teneva CP-SAT
+# limitato a ~30 secondi anche quando l'utente chiedeva una ricerca di
+# 10 minuti dall'interfaccia. Piano Vercel Pro: maxDuration fino a 800s
+# senza bisogno della configurazione beta "extended max duration" (che
+# arriverebbe a 1800s ma richiede impostazioni aggiuntive). Qui teniamo
+# un margine di sicurezza di 20s sotto agli 800s di vercel.json per il
+# tempo di parsing/risposta.
 MAX_SECONDI_SOLVER_DEFAULT = 8.0
-MAX_SECONDI_SOLVER_LIMITE = 50.0
+MAX_SECONDI_SOLVER_LIMITE = 780.0
 
 
 class handler(BaseHTTPRequestHandler):
